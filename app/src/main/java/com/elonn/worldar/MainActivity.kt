@@ -3,6 +3,7 @@ package com.elonn.worldar
 import android.Manifest
 import android.app.Activity
 import android.content.ActivityNotFoundException
+import android.content.Context
 import android.content.pm.PackageManager
 import android.net.Uri
 import android.opengl.GLES11Ext
@@ -15,6 +16,8 @@ import android.view.LayoutInflater
 import android.view.Surface
 import android.view.View
 import androidx.activity.OnBackPressedCallback
+import android.widget.Button
+import android.widget.EditText
 import android.widget.FrameLayout
 import android.widget.TextView
 import android.webkit.ValueCallback
@@ -55,11 +58,17 @@ class MainActivity : AppCompatActivity(), WebPanelHost {
     private lateinit var carryActiveWindowRoot: View
     private lateinit var carryAppDock: CarryAppDock
     private lateinit var carryActiveWindow: CarryActiveWindow
+    private lateinit var loginOverlay: View
+    private lateinit var loginEmail: EditText
+    private lateinit var loginPassword: EditText
+    private lateinit var loginSubmit: Button
+    private lateinit var loginStatus: TextView
     private lateinit var renderer: SpatialRenderer
 
     private var arSession: Session? = null
     private var installRequested = false
     private var isSessionResumed = false
+    private var authToken: String? = null
     private var pendingSocialFileCallback: ValueCallback<Array<Uri>>? = null
     private val smoothedRoomObjectPositions = mutableMapOf<String, ScreenPoint>()
 
@@ -98,6 +107,11 @@ class MainActivity : AppCompatActivity(), WebPanelHost {
         carryLayerRoot = findViewById(R.id.carry_layer)
         carryAppDockRoot = findViewById(R.id.carry_app_dock)
         carryActiveWindowRoot = findViewById(R.id.carry_active_window)
+        loginOverlay = findViewById(R.id.login_overlay)
+        loginEmail = findViewById(R.id.login_email)
+        loginPassword = findViewById(R.id.login_password)
+        loginSubmit = findViewById(R.id.login_submit)
+        loginStatus = findViewById(R.id.login_status)
         carryAppDock = CarryAppDock(
             root = carryAppDockRoot,
             onSelected = { surface -> showActiveCarryWindow(surface) }
@@ -108,7 +122,8 @@ class MainActivity : AppCompatActivity(), WebPanelHost {
             contentContainer = findViewById(R.id.active_window_body),
             closeControl = findViewById(R.id.active_window_close),
             panelHost = CarryPanelHost(
-                fileChooserHost = this
+                fileChooserHost = this,
+                authTokenProvider = { authToken }
             )
         )
         renderer = SpatialRenderer(
@@ -125,9 +140,10 @@ class MainActivity : AppCompatActivity(), WebPanelHost {
 
         configureCarryRegions()
         configureBackNavigation()
+        configureLogin()
         inflateRoomWorldMarkers()
         carryLayerRoot.bringToFront()
-        loadWorldRuntime()
+        resumeAuthenticatedRuntime()
     }
 
     override fun onResume() {
@@ -268,15 +284,71 @@ class MainActivity : AppCompatActivity(), WebPanelHost {
         )
     }
 
+    private fun configureLogin() {
+        loginSubmit.setOnClickListener {
+            val email = loginEmail.text?.toString()?.trim().orEmpty()
+            val password = loginPassword.text?.toString().orEmpty()
+            if (email.isBlank() || password.isBlank()) {
+                showLogin("Email and password are required.", enabled = true)
+                return@setOnClickListener
+            }
+
+            showLogin("Signing in...", enabled = false)
+            Thread {
+                val result = runCatching { ElonnAuthClient().login(email, password) }
+                runOnUiThread {
+                    result
+                        .onSuccess { session ->
+                            storeAuthToken(session.token)
+                            authToken = session.token
+                            seedRuntimeCookies(session.token)
+                            loginPassword.text?.clear()
+                            hideLogin()
+                            loadWorldRuntime(session.token)
+                        }
+                        .onFailure { throwable ->
+                            Log.w(tag, "login failed", throwable)
+                            showLogin("Login failed. Check your email and password.", enabled = true)
+                        }
+                }
+            }.start()
+        }
+    }
+
+    private fun resumeAuthenticatedRuntime() {
+        val storedToken = storedAuthToken()
+        if (storedToken.isNullOrBlank()) {
+            showLogin("Sign in to load your World runtime.", enabled = true)
+            return
+        }
+
+        showLogin("Checking session...", enabled = false)
+        Thread {
+            val valid = runCatching { ElonnAuthClient().isTokenValid(storedToken) }.getOrDefault(false)
+            runOnUiThread {
+                if (valid) {
+                    authToken = storedToken
+                    seedRuntimeCookies(storedToken)
+                    hideLogin()
+                    loadWorldRuntime(storedToken)
+                } else {
+                    clearAuthToken()
+                    authToken = null
+                    showLogin("Session expired. Sign in again.", enabled = true)
+                }
+            }
+        }.start()
+    }
+
     private fun showActiveCarryWindow(surface: CarrySurface) {
         Log.d(tag, "showActiveCarryWindow key=${surface.key} title=${surface.title}")
         carryActiveWindow.show(surface)
         carryLayerRoot.bringToFront()
     }
 
-    private fun loadWorldRuntime() {
+    private fun loadWorldRuntime(token: String) {
         Thread {
-            val result = runCatching { WorldRuntimeClient().fetch() }
+            val result = runCatching { WorldRuntimeClient().fetch(token) }
             runOnUiThread {
                 result
                     .onSuccess { runtime -> applyWorldRuntime(runtime) }
@@ -286,6 +358,55 @@ class MainActivity : AppCompatActivity(), WebPanelHost {
                     }
             }
         }.start()
+    }
+
+    private fun hideLogin() {
+        loginOverlay.visibility = View.GONE
+        loginSubmit.isEnabled = true
+    }
+
+    private fun showLogin(message: String, enabled: Boolean) {
+        loginOverlay.visibility = View.VISIBLE
+        loginOverlay.bringToFront()
+        loginStatus.text = message
+        loginEmail.isEnabled = enabled
+        loginPassword.isEnabled = enabled
+        loginSubmit.isEnabled = enabled
+    }
+
+    private fun storedAuthToken(): String? =
+        getSharedPreferences(AUTH_PREFS, Context.MODE_PRIVATE)
+            .getString(AUTH_TOKEN_KEY, null)
+            ?.takeIf { it.isNotBlank() }
+
+    private fun storeAuthToken(token: String) {
+        getSharedPreferences(AUTH_PREFS, Context.MODE_PRIVATE)
+            .edit()
+            .putString(AUTH_TOKEN_KEY, token)
+            .apply()
+    }
+
+    private fun clearAuthToken() {
+        getSharedPreferences(AUTH_PREFS, Context.MODE_PRIVATE)
+            .edit()
+            .remove(AUTH_TOKEN_KEY)
+            .apply()
+    }
+
+    private fun seedRuntimeCookies(token: String) {
+        android.webkit.CookieManager.getInstance().apply {
+            listOf(
+                "https://elonn.com",
+                "https://world.elonn.com",
+                "https://api.elonn.com",
+                "https://social.elonn.com",
+                "https://time.elonn.com",
+                "https://find.elonn.com"
+            ).forEach { baseUrl ->
+                setCookie(baseUrl, "elonn_api_token=$token; Path=/; Secure; SameSite=Lax")
+            }
+            flush()
+        }
     }
 
     private fun applyWorldRuntime(runtime: WorldRuntime) {
@@ -344,6 +465,8 @@ class MainActivity : AppCompatActivity(), WebPanelHost {
 
     private companion object {
         private const val ROOM_OBJECT_SMOOTHING = 0.42f
+        private const val AUTH_PREFS = "elonn_world_auth"
+        private const val AUTH_TOKEN_KEY = "elonn_api_token"
     }
 }
 

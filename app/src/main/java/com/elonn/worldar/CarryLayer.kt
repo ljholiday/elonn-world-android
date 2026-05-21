@@ -140,6 +140,7 @@ class CarryActiveWindow(
 
 class CarryPanelHost(
     private val fileChooserHost: WebPanelHost = NoOpWebPanelHost,
+    private val authTokenProvider: () -> String? = { null },
     private val worldBaseUrl: String = WORLD_BASE_URL
 ) {
     fun panelFor(surface: CarrySurface): CarryAppPanel {
@@ -150,6 +151,7 @@ class CarryPanelHost(
             WebCarryPanel(
                 title = surface.title,
                 url = worldUrl(runtimeUrl),
+                authToken = authTokenProvider(),
                 host = fileChooserHost
             )
         }
@@ -197,6 +199,7 @@ object NoOpWebPanelHost : WebPanelHost {
 class WebCarryPanel(
     override val title: String,
     private val url: String,
+    private val authToken: String?,
     private val host: WebPanelHost
 ) : CarryAppPanel {
     private var container: FrameLayout? = null
@@ -291,6 +294,7 @@ class WebCarryPanel(
             isVerticalScrollBarEnabled = true
             isHorizontalScrollBarEnabled = false
             overScrollMode = View.OVER_SCROLL_IF_CONTENT_SCROLLS
+            seedAuthCookies(this@WebCarryPanel.authToken)
             showStatus("Loading $title...")
             loadUrl(this@WebCarryPanel.url)
         }
@@ -312,6 +316,26 @@ class WebCarryPanel(
         CookieManager.getInstance().apply {
             setAcceptCookie(true)
             setAcceptThirdPartyCookies(webView, true)
+        }
+    }
+
+    private fun seedAuthCookies(token: String?) {
+        if (token.isNullOrBlank()) {
+            return
+        }
+
+        CookieManager.getInstance().apply {
+            listOf(
+                "https://elonn.com",
+                "https://world.elonn.com",
+                "https://api.elonn.com",
+                "https://social.elonn.com",
+                "https://time.elonn.com",
+                "https://find.elonn.com"
+            ).forEach { baseUrl ->
+                setCookie(baseUrl, "elonn_api_token=$token; Path=/; Secure; SameSite=Lax")
+            }
+            flush()
         }
     }
 

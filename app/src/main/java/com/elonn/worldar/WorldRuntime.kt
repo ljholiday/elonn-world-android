@@ -17,10 +17,12 @@ data class WorldRuntime(
 class WorldRuntimeClient(
     private val baseUrl: String = WORLD_BASE_URL
 ) {
-    fun fetch(): WorldRuntime {
+    fun fetch(token: String): WorldRuntime {
         val connection = (URL(baseUrl.trimEnd('/') + "/world/session").openConnection() as HttpURLConnection).apply {
             requestMethod = "GET"
             setRequestProperty("Accept", "application/json")
+            setRequestProperty("Authorization", "Bearer $token")
+            setRequestProperty("Cookie", "elonn_api_token=$token")
             setRequestProperty("User-Agent", "ElonnWorldAndroid/0.1 RuntimeClient/1")
             connectTimeout = 5000
             readTimeout = 5000
