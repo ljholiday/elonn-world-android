@@ -3,6 +3,8 @@ package com.elonn.worldar
 import android.content.Context
 import android.graphics.Color
 import android.net.Uri
+import android.os.Handler
+import android.os.Looper
 import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
@@ -17,6 +19,10 @@ import android.webkit.WebViewClient
 import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.TextView
+import org.json.JSONArray
+import org.json.JSONObject
+import java.net.HttpURLConnection
+import java.net.URL
 
 data class CarrySurface(
     val key: String,
@@ -296,8 +302,245 @@ class WebCarryPanel(
             overScrollMode = View.OVER_SCROLL_IF_CONTENT_SCROLLS
             seedAuthCookies(this@WebCarryPanel.authToken)
             showStatus("Loading $title...")
-            loadUrl(this@WebCarryPanel.url)
+            loadPanelContent(this)
         }
+
+    private fun loadPanelContent(target: WebView) {
+        Thread {
+            val result = runCatching { fetchPanelDocument() }
+            Handler(Looper.getMainLooper()).post {
+                val view = webView ?: return@post
+                if (view != target) {
+                    return@post
+                }
+
+                result
+                    .onSuccess { document ->
+                        view.loadDataWithBaseURL(url, document, "text/html", "UTF-8", null)
+                        statusView?.visibility = View.GONE
+                    }
+                    .onFailure {
+                        showStatus("$title could not load. Check connection and try again.")
+                    }
+            }
+        }.start()
+    }
+
+    private fun fetchPanelDocument(): String {
+        val connection = (URL(url).openConnection() as HttpURLConnection).apply {
+            requestMethod = "GET"
+            setRequestProperty("Accept", "application/json, text/html;q=0.9")
+            setRequestProperty("User-Agent", "ElonnWorldAndroid/0.1 CarrySurface/2")
+            authToken?.takeIf { it.isNotBlank() }?.let { token ->
+                setRequestProperty("Authorization", "Bearer $token")
+                setRequestProperty("Cookie", "elonn_api_token=$token")
+            }
+            connectTimeout = 5000
+            readTimeout = 8000
+            instanceFollowRedirects = true
+        }
+
+        try {
+            val status = connection.responseCode
+            val stream = if (status in 200..299) connection.inputStream else connection.errorStream
+            val body = stream?.bufferedReader()?.use { it.readText() }.orEmpty()
+            if (body.isBlank()) {
+                return panelDocument(title, "<p class=\"empty\">No panel content returned.</p>")
+            }
+
+            val contentType = connection.contentType.orEmpty().lowercase()
+            val trimmed = body.trimStart()
+            if (contentType.contains("json") || trimmed.startsWith("{") || trimmed.startsWith("[")) {
+                return panelDocument(title, renderJsonPanel(body, status))
+            }
+
+            return panelDocument(title, body)
+        } finally {
+            connection.disconnect()
+        }
+    }
+
+    private fun renderJsonPanel(body: String, status: Int): String {
+        val value = runCatching {
+            if (body.trimStart().startsWith("[")) {
+                JSONArray(body)
+            } else {
+                JSONObject(body)
+            }
+        }.getOrElse {
+            return "<pre>${body.escapeHtml()}</pre>"
+        }
+
+        return when (value) {
+            is JSONObject -> renderObjectPanel(value, status)
+            is JSONArray -> section("Items", renderArray(value))
+            else -> "<pre>${body.escapeHtml()}</pre>"
+        }
+    }
+
+    private fun renderObjectPanel(payload: JSONObject, status: Int): String {
+        htmlFragment(payload)?.let { return it }
+
+        val panelTitle = payload.bestString("title", "name", "kind").ifBlank { title }
+        val summary = payload.bestString("summary", "description", "message", "error")
+        val body = StringBuilder()
+
+        body.append("<header class=\"panel-header\"><p>")
+            .append(payload.optString("kind", "World").escapeHtml())
+            .append("</p><h1>")
+            .append(panelTitle.escapeHtml())
+            .append("</h1>")
+        if (summary.isNotBlank()) {
+            body.append("<span>").append(summary.escapeHtml()).append("</span>")
+        }
+        if (status !in 200..299) {
+            body.append("<strong>HTTP ").append(status).append("</strong>")
+        }
+        body.append("</header>")
+
+        renderSelectedObject(payload)?.let { body.append(it) }
+
+        payload.optJSONObject("objects")?.let { objects ->
+            objects.keys().forEachRemaining { key ->
+                val items = objects.optJSONArray(key) ?: return@forEachRemaining
+                body.append(section(key.toDisplayTitle(), renderArray(items)))
+            }
+        }
+
+        listOf("threads", "messages", "members", "calendars", "events", "findings").forEach { key ->
+            payload.optJSONArray(key)?.let { items ->
+                body.append(section(key.toDisplayTitle(), renderArray(items)))
+            }
+        }
+
+        payload.optJSONObject("counts")?.let { counts ->
+            body.append(section("Counts", renderKeyValues(counts)))
+        }
+
+        payload.optJSONObject("actions")?.let { actions ->
+            body.append(section("Actions", renderKeyValues(actions)))
+        }
+
+        if (body.isBlank()) {
+            body.append("<pre>").append(payload.toString(2).escapeHtml()).append("</pre>")
+        }
+
+        return body.toString()
+    }
+
+    private fun renderSelectedObject(payload: JSONObject): String? {
+        val selected = payload.optJSONObject("selected_object")
+            ?: payload.optJSONObject("selected_thread")
+            ?: return null
+        return section("Selected", renderObjectCard(selected))
+    }
+
+    private fun renderArray(items: JSONArray): String {
+        if (items.length() == 0) {
+            return "<p class=\"empty\">No items yet.</p>"
+        }
+
+        return buildString {
+            append("<div class=\"list\">")
+            for (index in 0 until items.length()) {
+                val item = items.opt(index)
+                append(
+                    when (item) {
+                        is JSONObject -> renderObjectCard(item)
+                        is JSONArray -> "<pre>${item.toString(2).escapeHtml()}</pre>"
+                        else -> "<article class=\"item\"><h2>${item.toString().escapeHtml()}</h2></article>"
+                    }
+                )
+            }
+            append("</div>")
+        }
+    }
+
+    private fun renderObjectCard(item: JSONObject): String {
+        val itemTitle = item.bestString("title", "name", "label", "email", "id").ifBlank { "Item" }
+        val summary = item.bestString("summary", "body", "description", "status", "visibility", "starts_at", "updated_at")
+        val metadata = listOf("kind", "view", "message_count", "member_count", "participant_count", "timezone", "created_at")
+            .mapNotNull { key -> item.optString(key).takeIf { it.isNotBlank() }?.let { key.toDisplayTitle() to it } }
+
+        return buildString {
+            append("<article class=\"item\"><h2>").append(itemTitle.escapeHtml()).append("</h2>")
+            if (summary.isNotBlank() && summary != itemTitle) {
+                append("<p>").append(summary.escapeHtml()).append("</p>")
+            }
+            if (metadata.isNotEmpty()) {
+                append("<dl>")
+                metadata.forEach { (key, value) ->
+                    append("<dt>").append(key.escapeHtml()).append("</dt><dd>").append(value.escapeHtml()).append("</dd>")
+                }
+                append("</dl>")
+            }
+            append("</article>")
+        }
+    }
+
+    private fun renderKeyValues(values: JSONObject): String =
+        buildString {
+            append("<dl class=\"kv\">")
+            values.keys().forEachRemaining { key ->
+                val value = values.opt(key)
+                append("<dt>").append(key.toDisplayTitle().escapeHtml()).append("</dt><dd>")
+                append((value?.toString() ?: "").escapeHtml())
+                append("</dd>")
+            }
+            append("</dl>")
+        }
+
+    private fun htmlFragment(payload: JSONObject): String? {
+        listOf("html", "body", "content", "panel", "fragment").forEach { key ->
+            val value = payload.optString(key)
+            if (value.contains("<") && value.contains(">")) {
+                return value
+            }
+        }
+
+        payload.optJSONObject("payload")?.let { nested ->
+            return htmlFragment(nested)
+        }
+
+        return null
+    }
+
+    private fun section(title: String, body: String): String =
+        "<section><h1>${title.escapeHtml()}</h1>$body</section>"
+
+    private fun panelDocument(pageTitle: String, body: String): String =
+        """
+        <!doctype html>
+        <html>
+        <head>
+            <meta charset="utf-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1">
+            <style>
+                :root { color-scheme: dark; background: #08110d; color: #e8f3ed; font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+                * { box-sizing: border-box; }
+                body { margin: 0; padding: 14px; background: #08110d; }
+                .panel-header { border-bottom: 1px solid rgba(220, 245, 230, 0.18); margin-bottom: 14px; padding-bottom: 12px; }
+                .panel-header p { color: #9fb4aa; font-size: 12px; letter-spacing: .08em; margin: 0 0 4px; text-transform: uppercase; }
+                .panel-header h1, section > h1 { font-size: 18px; line-height: 1.2; margin: 0 0 8px; }
+                .panel-header span, .empty { color: #b7c8bf; }
+                section { margin: 0 0 18px; }
+                .list { display: grid; gap: 10px; }
+                .item { background: #101c17; border: 1px solid rgba(220, 245, 230, 0.14); border-radius: 8px; padding: 12px; }
+                .item h2 { font-size: 15px; line-height: 1.25; margin: 0 0 6px; }
+                .item p { color: #c9d8d1; font-size: 13px; line-height: 1.4; margin: 0; overflow-wrap: anywhere; }
+                dl { display: grid; grid-template-columns: minmax(86px, 34%) 1fr; gap: 4px 10px; margin: 10px 0 0; }
+                dt { color: #91a89c; font-size: 11px; text-transform: uppercase; }
+                dd { color: #d9e7e0; font-size: 12px; margin: 0; overflow-wrap: anywhere; }
+                .kv { background: #101c17; border-radius: 8px; padding: 12px; }
+                pre { white-space: pre-wrap; overflow-wrap: anywhere; background: #101c17; border-radius: 8px; margin: 0; padding: 12px; }
+                a { color: #9ed7ff; }
+                button, input, textarea, select { font: inherit; max-width: 100%; }
+            </style>
+            <title>${pageTitle.escapeHtml()}</title>
+        </head>
+        <body>$body</body>
+        </html>
+        """.trimIndent()
 
     private fun createStatusView(context: Context): TextView =
         TextView(context).apply {
@@ -343,6 +586,28 @@ class WebCarryPanel(
         statusView?.text = message
         statusView?.visibility = View.VISIBLE
     }
+
+    private fun JSONObject.bestString(vararg keys: String): String {
+        keys.forEach { key ->
+            val value = optString(key)
+            if (value.isNotBlank() && value != "null") {
+                return value
+            }
+        }
+        return ""
+    }
+
+    private fun String.toDisplayTitle(): String =
+        split('_', '-', ' ')
+            .filter { it.isNotBlank() }
+            .joinToString(" ") { word -> word.replaceFirstChar { it.uppercase() } }
+
+    private fun String.escapeHtml(): String =
+        replace("&", "&amp;")
+            .replace("<", "&lt;")
+            .replace(">", "&gt;")
+            .replace("\"", "&quot;")
+            .replace("'", "&#39;")
 }
 
 class PlaceholderCarryPanel(
