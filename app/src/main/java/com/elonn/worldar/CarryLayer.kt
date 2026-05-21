@@ -84,6 +84,127 @@ class CarryAppDock(
         (this * root.resources.displayMetrics.density).toInt()
 }
 
+class CarrySideRails(
+    private val leftRail: View,
+    private val leftHandle: TextView,
+    private val leftItems: LinearLayout,
+    private val rightRail: View,
+    private val rightHandle: TextView,
+    private val rightItems: LinearLayout,
+    private val onSelected: (CarrySurface) -> Unit
+) {
+    private var expandedSide: Side? = null
+    private var leftSurfaces: List<CarrySurface> = emptyList()
+    private var rightSurfaces: List<CarrySurface> = emptyList()
+
+    init {
+        leftHandle.setOnClickListener { toggle(Side.LEFT) }
+        rightHandle.setOnClickListener { toggle(Side.RIGHT) }
+        collapse()
+    }
+
+    fun bind(initialSurfaces: List<CarrySurface>) {
+        update(initialSurfaces)
+    }
+
+    fun update(nextSurfaces: List<CarrySurface>) {
+        val splitIndex = ((nextSurfaces.size + 1) / 2).coerceAtLeast(1)
+        leftSurfaces = nextSurfaces.take(splitIndex)
+        rightSurfaces = nextSurfaces.drop(splitIndex)
+
+        bindItems(leftItems, leftSurfaces, Side.LEFT)
+        bindItems(rightItems, rightSurfaces, Side.RIGHT)
+        leftRail.visibility = if (leftSurfaces.isEmpty()) View.GONE else View.VISIBLE
+        rightRail.visibility = if (rightSurfaces.isEmpty()) View.GONE else View.VISIBLE
+        applyExpandedState()
+    }
+
+    fun handleBack(): Boolean {
+        if (expandedSide == null) {
+            return false
+        }
+
+        collapse()
+        return true
+    }
+
+    fun collapse() {
+        expandedSide = null
+        applyExpandedState()
+    }
+
+    private fun toggle(side: Side) {
+        expandedSide = if (expandedSide == side) null else side
+        applyExpandedState()
+    }
+
+    private fun bindItems(container: LinearLayout, surfaces: List<CarrySurface>, side: Side) {
+        container.removeAllViews()
+        surfaces.forEachIndexed { index, surface ->
+            container.addView(buttonFor(container, surface, side, index == surfaces.lastIndex))
+        }
+    }
+
+    private fun buttonFor(
+        container: LinearLayout,
+        surface: CarrySurface,
+        side: Side,
+        isLast: Boolean
+    ): TextView =
+        TextView(container.context).apply {
+            layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+            ).apply {
+                if (!isLast) {
+                    bottomMargin = 6.dp(container)
+                }
+            }
+            background = container.context.getDrawable(R.drawable.carry_dock_button_background)
+            gravity = Gravity.CENTER
+            minWidth = 88.dp(container)
+            minHeight = 36.dp(container)
+            setPadding(10.dp(container), 4.dp(container), 10.dp(container), 4.dp(container))
+            isSingleLine = true
+            text = surface.title
+            setTextColor(colorFor(surface.key))
+            textSize = 11.0f
+            setTypeface(typeface, android.graphics.Typeface.BOLD)
+            setOnClickListener {
+                collapse()
+                onSelected(surface)
+            }
+            if (side == Side.RIGHT) {
+                textAlignment = View.TEXT_ALIGNMENT_CENTER
+            }
+        }
+
+    private fun applyExpandedState() {
+        leftItems.visibility = if (expandedSide == Side.LEFT) View.VISIBLE else View.GONE
+        rightItems.visibility = if (expandedSide == Side.RIGHT) View.VISIBLE else View.GONE
+        leftHandle.text = if (expandedSide == Side.LEFT) "^" else "v"
+        rightHandle.text = if (expandedSide == Side.RIGHT) "^" else "v"
+    }
+
+    private fun colorFor(key: String): Int =
+        when {
+            key.contains("find", ignoreCase = true) -> Color.parseColor("#FFF4D7")
+            key.contains("social", ignoreCase = true) -> Color.parseColor("#E5F6FF")
+            key.contains("event", ignoreCase = true) -> Color.parseColor("#FFE6F0")
+            key.contains("calendar", ignoreCase = true) -> Color.parseColor("#EEFFE7")
+            key.contains("message", ignoreCase = true) -> Color.parseColor("#F5E8FF")
+            else -> Color.parseColor("#E7F4F8")
+        }
+
+    private fun Int.dp(view: View): Int =
+        (this * view.resources.displayMetrics.density).toInt()
+
+    private enum class Side {
+        LEFT,
+        RIGHT
+    }
+}
+
 class CarryActiveWindow(
     private val root: View,
     private val titleView: TextView,

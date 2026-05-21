@@ -19,6 +19,7 @@ import androidx.activity.OnBackPressedCallback
 import android.widget.Button
 import android.widget.EditText
 import android.widget.FrameLayout
+import android.widget.LinearLayout
 import android.widget.TextView
 import android.webkit.ValueCallback
 import android.webkit.WebChromeClient
@@ -54,9 +55,11 @@ class MainActivity : AppCompatActivity(), WebPanelHost {
     private lateinit var arSurface: GLSurfaceView
     private lateinit var roomWorldMarkers: FrameLayout
     private lateinit var carryLayerRoot: View
+    private lateinit var carrySideRailLayer: View
     private lateinit var carryAppDockRoot: View
     private lateinit var carryActiveWindowRoot: View
     private lateinit var carryAppDock: CarryAppDock
+    private lateinit var carrySideRails: CarrySideRails
     private lateinit var carryActiveWindow: CarryActiveWindow
     private lateinit var loginOverlay: View
     private lateinit var loginEmail: EditText
@@ -105,6 +108,7 @@ class MainActivity : AppCompatActivity(), WebPanelHost {
         arSurface = findViewById(R.id.ar_surface)
         roomWorldMarkers = findViewById(R.id.room_world_markers)
         carryLayerRoot = findViewById(R.id.carry_layer)
+        carrySideRailLayer = findViewById(R.id.carry_siderail_layer)
         carryAppDockRoot = findViewById(R.id.carry_app_dock)
         carryActiveWindowRoot = findViewById(R.id.carry_active_window)
         loginOverlay = findViewById(R.id.login_overlay)
@@ -114,6 +118,15 @@ class MainActivity : AppCompatActivity(), WebPanelHost {
         loginStatus = findViewById(R.id.login_status)
         carryAppDock = CarryAppDock(
             root = carryAppDockRoot,
+            onSelected = { surface -> showActiveCarryWindow(surface) }
+        )
+        carrySideRails = CarrySideRails(
+            leftRail = findViewById(R.id.carry_left_siderail),
+            leftHandle = findViewById(R.id.carry_left_siderail_handle),
+            leftItems = findViewById<LinearLayout>(R.id.carry_left_siderail_items),
+            rightRail = findViewById(R.id.carry_right_siderail),
+            rightHandle = findViewById(R.id.carry_right_siderail_handle),
+            rightItems = findViewById<LinearLayout>(R.id.carry_right_siderail_items),
             onSelected = { surface -> showActiveCarryWindow(surface) }
         )
         carryActiveWindow = CarryActiveWindow(
@@ -143,6 +156,7 @@ class MainActivity : AppCompatActivity(), WebPanelHost {
         configureLogin()
         inflateRoomWorldMarkers()
         carryLayerRoot.bringToFront()
+        carrySideRailLayer.bringToFront()
         resumeAuthenticatedRuntime()
     }
 
@@ -267,6 +281,7 @@ class MainActivity : AppCompatActivity(), WebPanelHost {
 
     private fun configureCarryRegions() {
         carryAppDock.bind(carrySurfaces)
+        carrySideRails.bind(carrySurfaces)
     }
 
     private fun configureBackNavigation() {
@@ -275,9 +290,11 @@ class MainActivity : AppCompatActivity(), WebPanelHost {
             object : OnBackPressedCallback(true) {
                 override fun handleOnBackPressed() {
                     if (!carryActiveWindow.handleBack()) {
-                        isEnabled = false
-                        onBackPressedDispatcher.onBackPressed()
-                        isEnabled = true
+                        if (!carrySideRails.handleBack()) {
+                            isEnabled = false
+                            onBackPressedDispatcher.onBackPressed()
+                            isEnabled = true
+                        }
                     }
                 }
             }
@@ -342,8 +359,10 @@ class MainActivity : AppCompatActivity(), WebPanelHost {
 
     private fun showActiveCarryWindow(surface: CarrySurface) {
         Log.d(tag, "showActiveCarryWindow key=${surface.key} title=${surface.title}")
+        carrySideRails.collapse()
         carryActiveWindow.show(surface)
         carryLayerRoot.bringToFront()
+        carrySideRailLayer.bringToFront()
     }
 
     private fun loadWorldRuntime(token: String) {
@@ -421,6 +440,7 @@ class MainActivity : AppCompatActivity(), WebPanelHost {
         carrySurfaces = nextSurfaces
         inflateRoomWorldMarkers()
         carryAppDock.update(carrySurfaces)
+        carrySideRails.update(carrySurfaces)
         renderer.updateWorldObjects(roomWorldMarkerObjects, PlaceholderWorldObjects.deviceLocation)
     }
 
