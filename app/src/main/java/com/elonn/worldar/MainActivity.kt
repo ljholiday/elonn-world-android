@@ -45,7 +45,7 @@ import javax.microedition.khronos.opengles.GL10
  * Minimal spatial proof for Elonn World's two-layer model.
  * Room objects are ARCore anchors projected into Android views; carry objects stay fixed on top.
  */
-class MainActivity : AppCompatActivity(), SocialPanelHost {
+class MainActivity : AppCompatActivity(), WebPanelHost {
     private val tag = "ElonnWorldAr"
 
     private lateinit var arSurface: GLSurfaceView
@@ -63,14 +63,8 @@ class MainActivity : AppCompatActivity(), SocialPanelHost {
     private var pendingSocialFileCallback: ValueCallback<Array<Uri>>? = null
     private val smoothedRoomObjectPositions = mutableMapOf<String, ScreenPoint>()
 
-    private val roomWorldMarkerObjects = PlaceholderWorldObjects.objects
-    private val carryDockButtons = listOf(
-        CarryDockButtonSpec(R.id.browser_object, CarryAppId.BROWSER),
-        CarryDockButtonSpec(R.id.social_object, CarryAppId.SOCIAL),
-        CarryDockButtonSpec(R.id.calendar_object, CarryAppId.CALENDAR),
-        CarryDockButtonSpec(R.id.messages_object, CarryAppId.MESSAGES),
-        CarryDockButtonSpec(R.id.settings_object, CarryAppId.SETTINGS)
-    )
+    private var roomWorldMarkerObjects = PlaceholderWorldObjects.objects
+    private var carrySurfaces = fallbackCarrySurfaces()
     private val roomObjectViews = mutableMapOf<String, View>()
 
     private val requestCameraPermission =
@@ -106,16 +100,15 @@ class MainActivity : AppCompatActivity(), SocialPanelHost {
         carryActiveWindowRoot = findViewById(R.id.carry_active_window)
         carryAppDock = CarryAppDock(
             root = carryAppDockRoot,
-            buttons = carryDockButtons,
-            onSelected = { appId -> showActiveCarryWindow(appId) }
+            onSelected = { surface -> showActiveCarryWindow(surface) }
         )
         carryActiveWindow = CarryActiveWindow(
             root = carryActiveWindowRoot,
             titleView = findViewById(R.id.active_window_title),
             contentContainer = findViewById(R.id.active_window_body),
             closeControl = findViewById(R.id.active_window_close),
-            panels = CarryPanelRegistry(
-                socialPanelHost = this
+            panelHost = CarryPanelHost(
+                fileChooserHost = this
             )
         )
         renderer = SpatialRenderer(
@@ -134,6 +127,7 @@ class MainActivity : AppCompatActivity(), SocialPanelHost {
         configureBackNavigation()
         inflateRoomWorldMarkers()
         carryLayerRoot.bringToFront()
+        loadWorldRuntime()
     }
 
     override fun onResume() {
@@ -241,6 +235,9 @@ class MainActivity : AppCompatActivity(), SocialPanelHost {
     private fun inflateRoomWorldMarkers() {
         val inflater = LayoutInflater.from(this)
 
+        roomWorldMarkers.removeAllViews()
+        roomObjectViews.clear()
+        smoothedRoomObjectPositions.clear()
         roomWorldMarkerObjects.forEach { roomObject ->
             val cardView = inflater.inflate(R.layout.view_room_object, roomWorldMarkers, false)
             cardView.findViewById<TextView>(R.id.roomObjectLabel).text = "World Marker"
@@ -253,7 +250,7 @@ class MainActivity : AppCompatActivity(), SocialPanelHost {
     }
 
     private fun configureCarryRegions() {
-        carryAppDock.bind()
+        carryAppDock.bind(carrySurfaces)
     }
 
     private fun configureBackNavigation() {
@@ -271,10 +268,39 @@ class MainActivity : AppCompatActivity(), SocialPanelHost {
         )
     }
 
-    private fun showActiveCarryWindow(appId: CarryAppId) {
-        Log.d(tag, "showActiveCarryWindow appId=$appId")
-        carryActiveWindow.show(appId)
+    private fun showActiveCarryWindow(surface: CarrySurface) {
+        Log.d(tag, "showActiveCarryWindow key=${surface.key} title=${surface.title}")
+        carryActiveWindow.show(surface)
         carryLayerRoot.bringToFront()
+    }
+
+    private fun loadWorldRuntime() {
+        Thread {
+            val result = runCatching { WorldRuntimeClient().fetch() }
+            runOnUiThread {
+                result
+                    .onSuccess { runtime -> applyWorldRuntime(runtime) }
+                    .onFailure { throwable ->
+                        Log.w(tag, "World runtime unavailable; using offline fallback", throwable)
+                        showSpatialStatus("World runtime unavailable. Showing offline proof markers.")
+                    }
+            }
+        }.start()
+    }
+
+    private fun applyWorldRuntime(runtime: WorldRuntime) {
+        val nextObjects = runtime.fieldObjects.ifEmpty { PlaceholderWorldObjects.objects }
+        val nextSurfaces = runtime.carrySurfaces.ifEmpty { fallbackCarrySurfaces() }
+        Log.d(
+            tag,
+            "loaded World runtime source=${runtime.source} field=${nextObjects.size} carry=${nextSurfaces.size}"
+        )
+
+        roomWorldMarkerObjects = nextObjects
+        carrySurfaces = nextSurfaces
+        inflateRoomWorldMarkers()
+        carryAppDock.update(carrySurfaces)
+        renderer.updateWorldObjects(roomWorldMarkerObjects, PlaceholderWorldObjects.deviceLocation)
     }
 
     private fun updateRoomObjectPositions(projections: List<ObjectProjection>) {
@@ -334,13 +360,15 @@ data class ScreenPoint(
 )
 
 private class SpatialRenderer(
-    private val worldObjects: List<WorldObject>,
-    private val deviceLocation: DeviceLocation,
+    worldObjects: List<WorldObject>,
+    deviceLocation: DeviceLocation,
     private val logMarkerCreated: (String) -> Unit,
     private val rotationProvider: () -> Int,
     private val onFrame: (List<ObjectProjection>) -> Unit
 ) : GLSurfaceView.Renderer {
     private val lock = Any()
+    private var worldObjects: List<WorldObject> = worldObjects
+    private var deviceLocation: DeviceLocation = deviceLocation
     private var session: Session? = null
     private var cameraTextureId = 0
     private var viewportWidth = 1
@@ -363,6 +391,16 @@ private class SpatialRenderer(
             worldAnchors.forEach { it.anchor.detach() }
             worldAnchors = emptyList()
             session = null
+        }
+    }
+
+    fun updateWorldObjects(nextWorldObjects: List<WorldObject>, nextDeviceLocation: DeviceLocation) {
+        synchronized(lock) {
+            worldAnchors.forEach { it.anchor.detach() }
+            worldAnchors = emptyList()
+            trackingFrameCount = 0
+            worldObjects = nextWorldObjects
+            deviceLocation = nextDeviceLocation
         }
     }
 
@@ -402,16 +440,27 @@ private class SpatialRenderer(
                 if (trackingFrameCount < REQUIRED_TRACKING_FRAMES_BEFORE_ANCHORING) {
                     return
                 }
-                worldAnchors = createWorldAnchors(currentSession, camera.pose)
+                val nextAnchors = synchronized(lock) {
+                    createWorldAnchors(currentSession, camera.pose, worldObjects, deviceLocation)
+                }
+                synchronized(lock) {
+                    worldAnchors = nextAnchors
+                }
             }
 
-            onFrame(projectWorldAnchors(camera))
+            val anchors = synchronized(lock) { worldAnchors }
+            onFrame(projectWorldAnchors(camera, anchors))
         } catch (_: CameraNotAvailableException) {
             // The Activity will retry when the session resumes.
         }
     }
 
-    private fun createWorldAnchors(session: Session, originPose: Pose): List<WorldObjectAnchor> =
+    private fun createWorldAnchors(
+        session: Session,
+        originPose: Pose,
+        worldObjects: List<WorldObject>,
+        deviceLocation: DeviceLocation
+    ): List<WorldObjectAnchor> =
         worldObjects.mapIndexed { index, worldObject ->
             val bearing = BearingMath.bearingDegrees(
                 fromLatitude = deviceLocation.latitude,
@@ -479,7 +528,10 @@ private class SpatialRenderer(
         )
     }
 
-    private fun projectWorldAnchors(camera: com.google.ar.core.Camera): List<ObjectProjection> {
+    private fun projectWorldAnchors(
+        camera: com.google.ar.core.Camera,
+        worldAnchors: List<WorldObjectAnchor>
+    ): List<ObjectProjection> {
         val viewMatrix = FloatArray(16)
         val projectionMatrix = FloatArray(16)
         val viewProjectionMatrix = FloatArray(16)
