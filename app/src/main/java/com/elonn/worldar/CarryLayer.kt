@@ -3,8 +3,6 @@ package com.elonn.worldar
 import android.content.Context
 import android.graphics.Color
 import android.net.Uri
-import android.os.Handler
-import android.os.Looper
 import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
@@ -21,8 +19,6 @@ import android.widget.LinearLayout
 import android.widget.TextView
 import org.json.JSONArray
 import org.json.JSONObject
-import java.net.HttpURLConnection
-import java.net.URL
 
 data class CarrySurface(
     val key: String,
@@ -211,6 +207,7 @@ class WebCarryPanel(
     private var container: FrameLayout? = null
     private var statusView: TextView? = null
     private var webView: WebView? = null
+    private var renderedPanelDocument = false
 
     override fun createView(context: Context): View =
         existingOrNewContainer(context).also { view ->
@@ -233,6 +230,7 @@ class WebCarryPanel(
         webView = null
         statusView = null
         container = null
+        renderedPanelDocument = false
     }
 
     private fun existingOrNewContainer(context: Context): FrameLayout =
@@ -259,10 +257,38 @@ class WebCarryPanel(
             )
 
             configureCookies(this)
+            setBackgroundColor(Color.parseColor("#08110D"))
             webViewClient = object : WebViewClient() {
                 override fun onPageFinished(view: WebView?, url: String?) {
                     CookieManager.getInstance().flush()
-                    statusView?.visibility = View.GONE
+                    if (renderedPanelDocument) {
+                        statusView?.visibility = View.GONE
+                        return
+                    }
+
+                    view?.evaluateJavascript(
+                        "(function(){return document.body ? document.body.innerText : '';})()"
+                    ) { encodedBody ->
+                        val currentView = webView ?: return@evaluateJavascript
+                        if (currentView != view) {
+                            return@evaluateJavascript
+                        }
+
+                        val bodyText = encodedBody?.decodeJavascriptString().orEmpty()
+                        val trimmed = bodyText.trimStart()
+                        if (trimmed.startsWith("{") || trimmed.startsWith("[")) {
+                            renderedPanelDocument = true
+                            currentView.loadDataWithBaseURL(
+                                this@WebCarryPanel.url,
+                                panelDocument(this@WebCarryPanel.title, renderJsonPanel(bodyText, 200)),
+                                "text/html",
+                                "UTF-8",
+                                null
+                            )
+                        } else {
+                            statusView?.visibility = View.GONE
+                        }
+                    }
                 }
 
                 override fun onReceivedError(
@@ -302,63 +328,8 @@ class WebCarryPanel(
             overScrollMode = View.OVER_SCROLL_IF_CONTENT_SCROLLS
             seedAuthCookies(this@WebCarryPanel.authToken)
             showStatus("Loading $title...")
-            loadPanelContent(this)
+            loadUrl(this@WebCarryPanel.url)
         }
-
-    private fun loadPanelContent(target: WebView) {
-        Thread {
-            val result = runCatching { fetchPanelDocument() }
-            Handler(Looper.getMainLooper()).post {
-                val view = webView ?: return@post
-                if (view != target) {
-                    return@post
-                }
-
-                result
-                    .onSuccess { document ->
-                        view.loadDataWithBaseURL(url, document, "text/html", "UTF-8", null)
-                        statusView?.visibility = View.GONE
-                    }
-                    .onFailure {
-                        showStatus("$title could not load. Check connection and try again.")
-                    }
-            }
-        }.start()
-    }
-
-    private fun fetchPanelDocument(): String {
-        val connection = (URL(url).openConnection() as HttpURLConnection).apply {
-            requestMethod = "GET"
-            setRequestProperty("Accept", "application/json, text/html;q=0.9")
-            setRequestProperty("User-Agent", "ElonnWorldAndroid/0.1 CarrySurface/2")
-            authToken?.takeIf { it.isNotBlank() }?.let { token ->
-                setRequestProperty("Authorization", "Bearer $token")
-                setRequestProperty("Cookie", "elonn_api_token=$token")
-            }
-            connectTimeout = 5000
-            readTimeout = 8000
-            instanceFollowRedirects = true
-        }
-
-        try {
-            val status = connection.responseCode
-            val stream = if (status in 200..299) connection.inputStream else connection.errorStream
-            val body = stream?.bufferedReader()?.use { it.readText() }.orEmpty()
-            if (body.isBlank()) {
-                return panelDocument(title, "<p class=\"empty\">No panel content returned.</p>")
-            }
-
-            val contentType = connection.contentType.orEmpty().lowercase()
-            val trimmed = body.trimStart()
-            if (contentType.contains("json") || trimmed.startsWith("{") || trimmed.startsWith("[")) {
-                return panelDocument(title, renderJsonPanel(body, status))
-            }
-
-            return panelDocument(title, body)
-        } finally {
-            connection.disconnect()
-        }
-    }
 
     private fun renderJsonPanel(body: String, status: Int): String {
         val value = runCatching {
@@ -608,6 +579,9 @@ class WebCarryPanel(
             .replace(">", "&gt;")
             .replace("\"", "&quot;")
             .replace("'", "&#39;")
+
+    private fun String.decodeJavascriptString(): String =
+        runCatching { JSONArray("[$this]").optString(0) }.getOrDefault("")
 }
 
 class PlaceholderCarryPanel(
