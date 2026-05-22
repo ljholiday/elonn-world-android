@@ -90,12 +90,12 @@ class CarrySideRails(
     private val leftItems: LinearLayout,
     private val rightRail: View,
     private val rightHandle: TextView,
-    private val rightItems: LinearLayout,
-    private val onSelected: (CarrySurface) -> Unit
+    private val rightItems: LinearLayout
 ) {
     private var expandedSide: Side? = null
-    private var leftSurfaces: List<CarrySurface> = emptyList()
-    private var rightSurfaces: List<CarrySurface> = emptyList()
+    private var leftContent = fallbackLeftContextRail()
+    private var rightContent = fallbackRightContextRail()
+    private var activeContext: CarrySurface? = null
 
     init {
         leftHandle.setOnClickListener { toggle(Side.LEFT) }
@@ -103,20 +103,24 @@ class CarrySideRails(
         collapse()
     }
 
-    fun bind(initialSurfaces: List<CarrySurface>) {
-        update(initialSurfaces)
+    fun bind(left: ContextRailContent, right: ContextRailContent) {
+        update(left, right)
     }
 
-    fun update(nextSurfaces: List<CarrySurface>) {
-        val splitIndex = ((nextSurfaces.size + 1) / 2).coerceAtLeast(1)
-        leftSurfaces = nextSurfaces.take(splitIndex)
-        rightSurfaces = nextSurfaces.drop(splitIndex)
-
-        bindItems(leftItems, leftSurfaces, Side.LEFT)
-        bindItems(rightItems, rightSurfaces, Side.RIGHT)
-        leftRail.visibility = if (leftSurfaces.isEmpty()) View.GONE else View.VISIBLE
-        rightRail.visibility = if (rightSurfaces.isEmpty()) View.GONE else View.VISIBLE
+    fun update(left: ContextRailContent, right: ContextRailContent) {
+        leftContent = left
+        rightContent = right
+        bindItems(leftItems, leftContent, activeContext = null)
+        bindItems(rightItems, rightContent, activeContext)
+        leftRail.visibility = View.VISIBLE
+        rightRail.visibility = View.VISIBLE
         applyExpandedState()
+    }
+
+    fun focus(surface: CarrySurface) {
+        activeContext = surface
+        bindItems(leftItems, leftContent, activeContext = null)
+        bindItems(rightItems, rightContent, activeContext)
     }
 
     fun handleBack(): Boolean {
@@ -138,22 +142,83 @@ class CarrySideRails(
         applyExpandedState()
     }
 
-    private fun bindItems(container: LinearLayout, surfaces: List<CarrySurface>, side: Side) {
+    private fun bindItems(
+        container: LinearLayout,
+        content: ContextRailContent,
+        activeContext: CarrySurface?
+    ) {
         container.removeAllViews()
-        surfaces.forEachIndexed { index, surface ->
-            container.addView(buttonFor(container, surface, side, index == surfaces.lastIndex))
+        container.addView(headerFor(container, content))
+        activeContext?.let { surface ->
+            container.addView(
+                rowFor(
+                    container = container,
+                    row = ContextRailRow("Open context", surface.title, "active_context"),
+                    isLast = false,
+                    emphasized = true
+                )
+            )
+        }
+
+        content.rows.forEachIndexed { index, row ->
+            container.addView(
+                rowFor(
+                    container = container,
+                    row = row,
+                    isLast = index == content.rows.lastIndex,
+                    emphasized = activeContext != null && rowMatchesSurface(row, activeContext)
+                )
+            )
         }
     }
 
-    private fun buttonFor(
-        container: LinearLayout,
-        surface: CarrySurface,
-        side: Side,
-        isLast: Boolean
-    ): TextView =
-        TextView(container.context).apply {
+    private fun headerFor(container: LinearLayout, content: ContextRailContent): LinearLayout =
+        LinearLayout(container.context).apply {
             layoutParams = LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT,
+                210.dp(container),
+                ViewGroup.LayoutParams.WRAP_CONTENT
+            ).apply {
+                bottomMargin = 8.dp(container)
+            }
+            orientation = LinearLayout.VERTICAL
+            setPadding(4.dp(container), 0, 4.dp(container), 0)
+
+            addView(
+                TextView(container.context).apply {
+                    layoutParams = LinearLayout.LayoutParams(
+                        ViewGroup.LayoutParams.MATCH_PARENT,
+                        ViewGroup.LayoutParams.WRAP_CONTENT
+                    )
+                    text = content.title
+                    setTextColor(Color.WHITE)
+                    textSize = 12.0f
+                    setTypeface(typeface, android.graphics.Typeface.BOLD)
+                }
+            )
+            addView(
+                TextView(container.context).apply {
+                    layoutParams = LinearLayout.LayoutParams(
+                        ViewGroup.LayoutParams.MATCH_PARENT,
+                        ViewGroup.LayoutParams.WRAP_CONTENT
+                    ).apply {
+                        topMargin = 2.dp(container)
+                    }
+                    text = content.status
+                    setTextColor(Color.parseColor("#B9CCC6"))
+                    textSize = 10.0f
+                }
+            )
+        }
+
+    private fun rowFor(
+        container: LinearLayout,
+        row: ContextRailRow,
+        isLast: Boolean,
+        emphasized: Boolean
+    ): LinearLayout =
+        LinearLayout(container.context).apply {
+            layoutParams = LinearLayout.LayoutParams(
+                210.dp(container),
                 ViewGroup.LayoutParams.WRAP_CONTENT
             ).apply {
                 if (!isLast) {
@@ -161,22 +226,37 @@ class CarrySideRails(
                 }
             }
             background = container.context.getDrawable(R.drawable.carry_dock_button_background)
-            gravity = Gravity.CENTER
-            minWidth = 88.dp(container)
-            minHeight = 36.dp(container)
-            setPadding(10.dp(container), 4.dp(container), 10.dp(container), 4.dp(container))
-            isSingleLine = true
-            text = surface.title
-            setTextColor(colorFor(surface.key))
-            textSize = 11.0f
-            setTypeface(typeface, android.graphics.Typeface.BOLD)
-            setOnClickListener {
-                collapse()
-                onSelected(surface)
-            }
-            if (side == Side.RIGHT) {
-                textAlignment = View.TEXT_ALIGNMENT_CENTER
-            }
+            orientation = LinearLayout.VERTICAL
+            minimumHeight = 42.dp(container)
+            setPadding(10.dp(container), 6.dp(container), 10.dp(container), 6.dp(container))
+
+            addView(
+                TextView(container.context).apply {
+                    layoutParams = LinearLayout.LayoutParams(
+                        ViewGroup.LayoutParams.MATCH_PARENT,
+                        ViewGroup.LayoutParams.WRAP_CONTENT
+                    )
+                    isSingleLine = true
+                    text = row.title
+                    setTextColor(if (emphasized) Color.parseColor("#D7FFF3") else colorFor(row.key))
+                    textSize = 11.0f
+                    setTypeface(typeface, android.graphics.Typeface.BOLD)
+                }
+            )
+            addView(
+                TextView(container.context).apply {
+                    layoutParams = LinearLayout.LayoutParams(
+                        ViewGroup.LayoutParams.MATCH_PARENT,
+                        ViewGroup.LayoutParams.WRAP_CONTENT
+                    ).apply {
+                        topMargin = 1.dp(container)
+                    }
+                    maxLines = 3
+                    text = row.detail
+                    setTextColor(Color.parseColor("#C4D2CE"))
+                    textSize = 10.0f
+                }
+            )
         }
 
     private fun applyExpandedState() {
@@ -193,8 +273,18 @@ class CarrySideRails(
             key.contains("event", ignoreCase = true) -> Color.parseColor("#FFE6F0")
             key.contains("calendar", ignoreCase = true) -> Color.parseColor("#EEFFE7")
             key.contains("message", ignoreCase = true) -> Color.parseColor("#F5E8FF")
+            key.contains("member", ignoreCase = true) -> Color.parseColor("#D7FFF3")
+            key.contains("contract", ignoreCase = true) -> Color.parseColor("#FFFFFF")
             else -> Color.parseColor("#E7F4F8")
         }
+
+    private fun rowMatchesSurface(row: ContextRailRow, surface: CarrySurface): Boolean {
+        val key = "${row.key} ${row.title}".lowercase()
+        val surfaceKey = "${surface.key} ${surface.title}".lowercase()
+        return key.split(Regex("[^a-z0-9]+"))
+            .filter { it.length > 3 }
+            .any { token -> surfaceKey.contains(token) }
+    }
 
     private fun Int.dp(view: View): Int =
         (this * view.resources.displayMetrics.density).toInt()

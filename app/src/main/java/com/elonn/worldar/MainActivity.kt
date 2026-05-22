@@ -77,6 +77,8 @@ class MainActivity : AppCompatActivity(), WebPanelHost {
 
     private var roomWorldMarkerObjects = PlaceholderWorldObjects.objects
     private var carrySurfaces = fallbackCarrySurfaces()
+    private var leftContextRail = fallbackLeftContextRail()
+    private var rightContextRail = fallbackRightContextRail()
     private val roomObjectViews = mutableMapOf<String, View>()
 
     private val requestCameraPermission =
@@ -126,8 +128,7 @@ class MainActivity : AppCompatActivity(), WebPanelHost {
             leftItems = findViewById<LinearLayout>(R.id.carry_left_siderail_items),
             rightRail = findViewById(R.id.carry_right_siderail),
             rightHandle = findViewById(R.id.carry_right_siderail_handle),
-            rightItems = findViewById<LinearLayout>(R.id.carry_right_siderail_items),
-            onSelected = { surface -> showActiveCarryWindow(surface) }
+            rightItems = findViewById<LinearLayout>(R.id.carry_right_siderail_items)
         )
         carryActiveWindow = CarryActiveWindow(
             root = carryActiveWindowRoot,
@@ -281,7 +282,7 @@ class MainActivity : AppCompatActivity(), WebPanelHost {
 
     private fun configureCarryRegions() {
         carryAppDock.bind(carrySurfaces)
-        carrySideRails.bind(carrySurfaces)
+        carrySideRails.bind(leftContextRail, rightContextRail)
     }
 
     private fun configureBackNavigation() {
@@ -359,6 +360,7 @@ class MainActivity : AppCompatActivity(), WebPanelHost {
 
     private fun showActiveCarryWindow(surface: CarrySurface) {
         Log.d(tag, "showActiveCarryWindow key=${surface.key} title=${surface.title}")
+        carrySideRails.focus(surface)
         carrySideRails.collapse()
         carryActiveWindow.show(surface)
         carryLayerRoot.bringToFront()
@@ -438,9 +440,11 @@ class MainActivity : AppCompatActivity(), WebPanelHost {
 
         roomWorldMarkerObjects = nextObjects
         carrySurfaces = nextSurfaces
+        leftContextRail = runtime.leftContextRail
+        rightContextRail = runtime.rightContextRail
         inflateRoomWorldMarkers()
         carryAppDock.update(carrySurfaces)
-        carrySideRails.update(carrySurfaces)
+        carrySideRails.update(leftContextRail, rightContextRail)
         renderer.updateWorldObjects(roomWorldMarkerObjects, PlaceholderWorldObjects.deviceLocation)
     }
 

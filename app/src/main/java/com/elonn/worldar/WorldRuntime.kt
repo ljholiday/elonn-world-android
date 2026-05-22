@@ -11,7 +11,21 @@ import kotlin.math.sin
 data class WorldRuntime(
     val fieldObjects: List<WorldObject>,
     val carrySurfaces: List<CarrySurface>,
+    val leftContextRail: ContextRailContent,
+    val rightContextRail: ContextRailContent,
     val source: String
+)
+
+data class ContextRailContent(
+    val title: String,
+    val status: String,
+    val rows: List<ContextRailRow>
+)
+
+data class ContextRailRow(
+    val title: String,
+    val detail: String,
+    val key: String = title
 )
 
 class WorldRuntimeClient(
@@ -50,6 +64,8 @@ object WorldRuntimeParser {
         return WorldRuntime(
             fieldObjects = fieldObjects(layout.optJSONArray("field")),
             carrySurfaces = carrySurfaces(layout.optJSONArray("carry")),
+            leftContextRail = worldContextRail(payload, layout),
+            rightContextRail = socialContextRail(payload),
             source = source
         )
     }
@@ -135,6 +151,97 @@ object WorldRuntimeParser {
         return runCatching { JSONObject(encoded) }.getOrDefault(JSONObject())
     }
 
+    private fun worldContextRail(payload: JSONObject, layout: JSONObject): ContextRailContent {
+        val contract = payload.optJSONObject("contract") ?: JSONObject()
+        val session = payload.optJSONObject("session") ?: JSONObject()
+        val services = payload.optJSONObject("services") ?: JSONObject()
+        val identityMembers = services
+            .optJSONObject("identity")
+            ?.optJSONObject("objects")
+            ?.optJSONArray("members")
+            ?: payload.optJSONObject("identity")?.optJSONArray("members")
+        val mapsObjects = payload.optJSONObject("maps") ?: JSONObject()
+        val field = layout.optJSONArray("field") ?: mapsObjects.optJSONArray("field")
+        val carry = layout.optJSONArray("carry")
+
+        return ContextRailContent(
+            title = "World Contract",
+            status = "World runtime session loaded.",
+            rows = listOf(
+                ContextRailRow("Contract", contract.optString("name", "unknown"), "contract"),
+                ContextRailRow("Version", contract.optString("version", "0"), "version"),
+                ContextRailRow(
+                    "Persistence",
+                    session.optString("persistence_authority", "world"),
+                    "persistence"
+                ),
+                ContextRailRow("Members", (identityMembers?.length() ?: 0).toString(), "members"),
+                ContextRailRow("Map objects", (field?.length() ?: 0).toString(), "map_objects"),
+                ContextRailRow("Carry objects", (carry?.length() ?: 0).toString(), "carry_objects")
+            )
+        )
+    }
+
+    private fun socialContextRail(payload: JSONObject): ContextRailContent {
+        val objects = payload
+            .optJSONObject("services")
+            ?.optJSONObject("social")
+            ?.optJSONObject("objects")
+            ?: JSONObject()
+        val conversations = objects.optJSONArray("conversations") ?: JSONArray()
+        val communities = objects.optJSONArray("communities") ?: JSONArray()
+        val events = objects.optJSONArray("events") ?: JSONArray()
+        val presence = objects.optJSONArray("presence") ?: JSONArray()
+        val messages = objects.optJSONArray("messages") ?: JSONArray()
+
+        return ContextRailContent(
+            title = "Social Menu",
+            status = "${conversations.length()} conversations, ${communities.length()} communities, " +
+                "${events.length()} events, ${presence.length()} presence signals, " +
+                "${messages.length()} message threads.",
+            rows = buildList {
+                add(ContextRailRow("Open workspace", "Open the main social interface.", "social_workspace"))
+                add(ContextRailRow("Create conversation", "Start a new thread.", "create_conversation"))
+                add(ContextRailRow("Create community", "Start a new community.", "create_community"))
+                add(ContextRailRow("Conversations", "${conversations.length()} threads", "conversations"))
+                add(ContextRailRow("Communities", "${communities.length()} groups", "communities"))
+                add(ContextRailRow("Events", "${events.length()} gatherings", "events"))
+                add(ContextRailRow("Presence", "${presence.length()} signals", "presence"))
+                appendSocialRows(conversations, "conversation", 3) { item ->
+                    item.optString("title", item.optString("name", "Conversation")) to
+                        item.optString("summary", item.optString("description", "No summary available."))
+                }
+                appendSocialRows(communities, "community", 3) { item ->
+                    item.optString("name", item.optString("title", "Community")) to
+                        item.optString("summary", item.optString("description", "No summary available."))
+                }
+                appendSocialRows(events, "event", 3) { item ->
+                    item.optString("title", item.optString("name", "Event")) to
+                        item.optString("summary", item.optString("visibility", "No summary available."))
+                }
+                appendSocialRows(presence, "presence", 3) { item ->
+                    val identity = item.optString("identity_user_id", item.optString("name", "Presence"))
+                    val status = item.optString("status", "active")
+                    val availability = item.optString("availability", "").ifBlank { "available" }
+                    identity to "$status - $availability"
+                }
+            }
+        )
+    }
+
+    private fun MutableList<ContextRailRow>.appendSocialRows(
+        source: JSONArray,
+        keyPrefix: String,
+        limit: Int,
+        mapper: (JSONObject) -> Pair<String, String>
+    ) {
+        for (index in 0 until minOf(source.length(), limit)) {
+            val item = source.optJSONObject(index) ?: continue
+            val (title, detail) = mapper(item)
+            add(ContextRailRow(title, detail, "$keyPrefix:$index"))
+        }
+    }
+
     private fun nearbyWorldObject(
         id: String,
         type: String,
@@ -175,4 +282,25 @@ fun fallbackCarrySurfaces(): List<CarrySurface> =
         CarrySurface("calendar_object", "Calendar", "Calendar is unavailable while World is offline.", null),
         CarrySurface("messages_object", "Messages", "Messages are unavailable while World is offline.", null),
         CarrySurface("settings_object", "Settings", "World runtime settings are unavailable while offline.", null)
+    )
+
+fun fallbackLeftContextRail(): ContextRailContent =
+    ContextRailContent(
+        title = "World Contract",
+        status = "World runtime unavailable.",
+        rows = listOf(
+            ContextRailRow("Service", "Offline", "service"),
+            ContextRailRow("Persistence", "world", "persistence"),
+            ContextRailRow("Map objects", PlaceholderWorldObjects.objects.size.toString(), "map_objects"),
+            ContextRailRow("Carry objects", fallbackCarrySurfaces().size.toString(), "carry_objects")
+        )
+    )
+
+fun fallbackRightContextRail(): ContextRailContent =
+    ContextRailContent(
+        title = "Social Menu",
+        status = "Social context unavailable.",
+        rows = listOf(
+            ContextRailRow("Workspace", "Sign in to load social objects.", "social_workspace")
+        )
     )
