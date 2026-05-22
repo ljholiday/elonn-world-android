@@ -367,6 +367,14 @@ class MainActivity : AppCompatActivity(), WebPanelHost {
     private fun openContextRailRow(row: ContextRailRow) {
         val key = row.key.lowercase()
         val target = when {
+            key.startsWith("message_thread:") -> {
+                val threadId = row.key.substringAfter(':', "")
+                surfaceForKey("messages_object")?.copy(
+                    title = row.title,
+                    runtimePanelUrl = "/world/panels/messages?thread=$threadId"
+                )
+            }
+            key == "messages" || key == "messages_new" -> surfaceForKey("messages_object")
             key.contains("event") -> surfaceForKey("events_object")
                 ?: surfaceForKey("social_object")?.copy(
                     title = "Events",

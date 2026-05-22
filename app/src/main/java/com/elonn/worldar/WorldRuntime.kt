@@ -207,6 +207,7 @@ object WorldRuntimeParser {
                 add(ContextRailRow("Communities", "${communities.length()} groups", "communities"))
                 add(ContextRailRow("Events", "${events.length()} gatherings", "events"))
                 add(ContextRailRow("Presence", "${presence.length()} signals", "presence"))
+                add(ContextRailRow("Messages", "${messages.length()} threads", "messages"))
                 appendSocialRows(conversations, "conversation", 3) { item ->
                     item.optString("title", item.optString("name", "Conversation")) to
                         item.optString("summary", item.optString("description", "No summary available."))
@@ -225,8 +226,19 @@ object WorldRuntimeParser {
                     val availability = item.optString("availability", "").ifBlank { "available" }
                     identity to "$status - $availability"
                 }
+                appendMessageRows(messages, 5)
             }
         )
+    }
+
+    private fun MutableList<ContextRailRow>.appendMessageRows(source: JSONArray, limit: Int) {
+        for (index in 0 until minOf(source.length(), limit)) {
+            val item = source.optJSONObject(index) ?: continue
+            val id = item.optString("id", index.toString())
+            val title = item.optString("title", item.optString("participant_label", "Message thread"))
+            val detail = item.optString("summary", item.optString("participant_label", "Direct messages"))
+            add(ContextRailRow(title, detail, "message_thread:$id"))
+        }
     }
 
     private fun MutableList<ContextRailRow>.appendSocialRows(
@@ -277,11 +289,11 @@ object WorldRuntimeParser {
 
 fun fallbackCarrySurfaces(): List<CarrySurface> =
     listOf(
-        CarrySurface("find_object", "Find", "Find is unavailable while World is offline.", null),
-        CarrySurface("social_object", "Social", "Social is unavailable while World is offline.", null),
-        CarrySurface("events_object", "Events", "Events are unavailable while World is offline.", null),
-        CarrySurface("calendar_object", "Calendar", "Calendar is unavailable while World is offline.", null),
-        CarrySurface("messages_object", "Messages", "Messages are unavailable while World is offline.", null),
+        CarrySurface("find_object", "Find", "Find is unavailable while World is offline.", "/world/panels/find"),
+        CarrySurface("social_object", "Social", "Social is unavailable while World is offline.", "/world/panels/social"),
+        CarrySurface("events_object", "Events", "Events are unavailable while World is offline.", "/world/panels/social?view=events"),
+        CarrySurface("calendar_object", "Calendar", "Calendar is unavailable while World is offline.", "/world/panels/time"),
+        CarrySurface("messages_object", "Messages", "Messages are unavailable while World is offline.", "/world/panels/messages"),
         CarrySurface("settings_object", "Settings", "World runtime settings are unavailable while offline.", null)
     )
 

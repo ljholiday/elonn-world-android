@@ -136,7 +136,8 @@ class CarrySideRails(
     ) {
         container.removeAllViews()
         container.addView(headerFor(container, content))
-        activeContext?.let { surface ->
+        val focusedRows = focusedRowsFor(content, activeContext)
+        activeContext?.takeUnless { isMessagesContext(it) && content == rightContent }?.let { surface ->
             container.addView(
                 rowFor(
                     container = container,
@@ -148,18 +149,38 @@ class CarrySideRails(
             )
         }
 
-        content.rows.forEachIndexed { index, row ->
+        focusedRows.forEachIndexed { index, row ->
             container.addView(
                 rowFor(
                     container = container,
                     row = row,
-                    isLast = index == content.rows.lastIndex,
+                    isLast = index == focusedRows.lastIndex,
                     emphasized = activeContext != null && rowMatchesSurface(row, activeContext),
                     interactive = content == rightContent
                 )
             )
         }
     }
+
+    private fun focusedRowsFor(
+        content: ContextRailContent,
+        activeContext: CarrySurface?
+    ): List<ContextRailRow> {
+        if (content != rightContent || activeContext == null || !isMessagesContext(activeContext)) {
+            return content.rows
+        }
+
+        val threadRows = content.rows.filter { it.key.startsWith("message_thread:", ignoreCase = true) }
+        return buildList {
+            add(ContextRailRow("Messages inbox", "View all direct message threads.", "messages"))
+            add(ContextRailRow("New message", "Start a direct message thread.", "messages_new"))
+            addAll(threadRows)
+        }
+    }
+
+    private fun isMessagesContext(surface: CarrySurface): Boolean =
+        surface.key.contains("message", ignoreCase = true) ||
+            surface.title.contains("message", ignoreCase = true)
 
     private fun headerFor(container: LinearLayout, content: ContextRailContent): LinearLayout =
         LinearLayout(container.context).apply {
@@ -487,6 +508,14 @@ class WebCarryPanel(
                         showStatus("$title could not load. Check connection and try again.")
                     }
                 }
+
+                override fun shouldOverrideUrlLoading(
+                    view: WebView?,
+                    request: WebResourceRequest?
+                ): Boolean {
+                    renderedPanelDocument = false
+                    return false
+                }
             }
             webChromeClient = object : WebChromeClient() {
                 override fun onProgressChanged(view: WebView?, newProgress: Int) {
@@ -538,6 +567,7 @@ class WebCarryPanel(
 
     private fun renderObjectPanel(payload: JSONObject, status: Int): String {
         htmlFragment(payload)?.let { return it }
+        renderMessagesPanel(payload)?.let { return it }
 
         val panelTitle = payload.bestString("title", "name", "kind").ifBlank { title }
         val summary = payload.bestString("summary", "description", "message", "error")
@@ -593,6 +623,122 @@ class WebCarryPanel(
         return section("Selected", renderObjectCard(selected))
     }
 
+    private fun renderMessagesPanel(payload: JSONObject): String? {
+        if (payload.optString("view") != "messages" && !payload.has("threads")) {
+            return null
+        }
+
+        val threads = payload.optJSONArray("threads") ?: JSONArray()
+        val selectedThread = payload.optJSONObject("selected_thread")
+        return if (selectedThread != null) {
+            renderMessageThreadPanel(selectedThread, payload.optJSONArray("messages") ?: JSONArray())
+        } else {
+            renderMessageInboxPanel(threads)
+        }
+    }
+
+    private fun renderMessageInboxPanel(threads: JSONArray): String =
+        buildString {
+            append("<header class=\"panel-header\"><p>World Messages</p><h1>Messages</h1>")
+            append("<span>").append(threads.length()).append(" message thread")
+            append(if (threads.length() == 1) "." else "s.")
+            append("</span></header>")
+
+            append("<section><h1>New Message</h1>")
+            append("<form class=\"message-form\" data-create-thread action=\"/world/messages\" method=\"post\">")
+            append("<label>To<input name=\"recipient\" required maxlength=\"160\" autocomplete=\"off\" placeholder=\"member id, username, or display name\"></label>")
+            append("<label>Message<textarea name=\"body\" required maxlength=\"500\" placeholder=\"Write a message\"></textarea></label>")
+            append("<button type=\"submit\">Send message</button><p class=\"form-status\" data-form-status></p>")
+            append("</form></section>")
+
+            append("<section><h1>Inbox</h1>")
+            if (threads.length() == 0) {
+                append("<p class=\"empty\">No message threads yet.</p>")
+            } else {
+                append("<div class=\"list\">")
+                for (index in 0 until threads.length()) {
+                    val thread = threads.optJSONObject(index) ?: continue
+                    append(renderMessageThreadCard(thread))
+                }
+                append("</div>")
+            }
+            append("</section>")
+            append(messagesPanelScript())
+        }
+
+    private fun renderMessageThreadPanel(thread: JSONObject, messages: JSONArray): String =
+        buildString {
+        val threadTitle = thread.bestString("title", "participant_label", "summary").ifBlank { "Direct messages" }
+        val threadSummary = thread.bestString("participant_label", "summary").ifBlank { "Message thread" }
+        val threadId = thread.optString("id")
+        val messageEndpoint = thread.linkOrAction("messages", "send_message")
+            .ifBlank { if (threadId.isBlank()) "" else "/world/messages/${threadId.escapeHtml()}/messages" }
+
+            append("<header class=\"panel-header\"><p>World Messages</p><h1>")
+            append(threadTitle.escapeHtml())
+            append("</h1><span>")
+            append(threadSummary.escapeHtml())
+            append("</span></header>")
+
+            append("<div class=\"actions\"><a href=\"/world/panels/messages?surface=android_carry\">Back to inbox</a></div>")
+            append("<section><h1>Thread</h1>")
+            if (messages.length() == 0) {
+                append("<p class=\"empty\">No messages yet.</p>")
+            } else {
+                append("<ul class=\"messages\">")
+                for (index in 0 until messages.length()) {
+                    val message = messages.optJSONObject(index) ?: continue
+                    append(renderDirectMessage(message))
+                }
+                append("</ul>")
+            }
+            append("</section>")
+
+            append("<section><h1>Reply</h1>")
+            append("<form class=\"message-form\" data-reply-thread action=\"")
+            append(messageEndpoint.escapeHtml())
+            append("\" method=\"post\">")
+            append("<label>Message<textarea name=\"body\" required maxlength=\"500\" placeholder=\"Write a message\"></textarea></label>")
+            append("<button type=\"submit\">Send message</button><p class=\"form-status\" data-form-status></p>")
+            append("</form></section>")
+            append(messagesPanelScript())
+        }
+
+    private fun renderMessageThreadCard(thread: JSONObject): String {
+        val threadId = thread.optString("id")
+        val threadTitle = thread.bestString("title", "participant_label", "summary").ifBlank { "Message thread" }
+        val summary = thread.bestString("summary", "participant_label", "body").ifBlank { "Message thread" }
+        val unread = thread.optInt("unread_count", 0)
+        val href = "/world/panels/messages?thread=${threadId.escapeHtml()}&surface=android_carry"
+
+        return buildString {
+            append("<article class=\"item message-thread\"><a href=\"")
+            append(href)
+            append("\"><h2>")
+            append(threadTitle.escapeHtml())
+            append("</h2><p>")
+            append(summary.escapeHtml())
+            append("</p>")
+            if (unread > 0) {
+                append("<strong>").append(unread).append(" unread</strong>")
+            }
+            append("</a></article>")
+        }
+    }
+
+    private fun renderDirectMessage(message: JSONObject): String {
+        val author = message.bestString("author_label", "author_identity_user_id", "identity_user_id", "sender").ifBlank { "Member" }
+        val body = message.bestString("body", "message", "summary")
+        val created = message.bestString("created_at", "sent_at")
+        return buildString {
+            append("<li><strong>").append(author.escapeHtml()).append("</strong>")
+            if (created.isNotBlank()) {
+                append("<span>").append(created.escapeHtml()).append("</span>")
+            }
+            append("<p>").append(body.escapeHtml()).append("</p></li>")
+        }
+    }
+
     private fun renderArray(items: JSONArray): String {
         if (items.length() == 0) {
             return "<p class=\"empty\">No items yet.</p>"
@@ -634,6 +780,16 @@ class WebCarryPanel(
             }
             append("</article>")
         }
+    }
+
+    private fun JSONObject.linkOrAction(vararg keys: String): String {
+        val links = optJSONObject("links")
+        val actions = optJSONObject("actions")
+        keys.forEach { key ->
+            links?.optString(key)?.takeIf { it.isNotBlank() }?.let { return it }
+            actions?.optString(key)?.takeIf { it.isNotBlank() }?.let { return it }
+        }
+        return ""
     }
 
     private fun renderKeyValues(values: JSONObject): String =
@@ -684,8 +840,21 @@ class WebCarryPanel(
                 section { margin: 0 0 18px; }
                 .list { display: grid; gap: 10px; }
                 .item { background: #101c17; border: 1px solid rgba(220, 245, 230, 0.14); border-radius: 8px; padding: 12px; }
+                .item a { color: inherit; display: block; text-decoration: none; }
                 .item h2 { font-size: 15px; line-height: 1.25; margin: 0 0 6px; }
                 .item p { color: #c9d8d1; font-size: 13px; line-height: 1.4; margin: 0; overflow-wrap: anywhere; }
+                .actions { display: flex; flex-wrap: wrap; gap: 8px; margin: 0 0 14px; }
+                .actions a, button { min-height: 32px; border: 1px solid rgba(215, 255, 243, 0.28); border-radius: 8px; background: #d7fff3; color: #10201d; font-weight: 800; padding: 7px 10px; text-decoration: none; }
+                .message-form { display: grid; gap: 10px; }
+                .message-form label { color: #b7c8bf; display: grid; gap: 5px; font-size: 12px; font-weight: 700; text-transform: uppercase; }
+                input, textarea { width: 100%; border: 1px solid rgba(215, 255, 243, 0.22); border-radius: 8px; background: #09120f; color: #ffffff; padding: 9px 10px; }
+                textarea { min-height: 86px; resize: vertical; }
+                .form-status { color: #b7c8bf; min-height: 18px; margin: 0; }
+                .messages { display: grid; gap: 8px; list-style: none; margin: 0; padding: 0; }
+                .messages li { background: #101c17; border: 1px solid rgba(220, 245, 230, 0.14); border-radius: 8px; display: grid; gap: 4px; padding: 10px 12px; }
+                .messages strong { color: #ffffff; font-size: 13px; }
+                .messages span { color: #91a89c; font-size: 11px; }
+                .messages p { color: #c9d8d1; font-size: 13px; line-height: 1.4; margin: 0; overflow-wrap: anywhere; }
                 dl { display: grid; grid-template-columns: minmax(86px, 34%) 1fr; gap: 4px 10px; margin: 10px 0 0; }
                 dt { color: #91a89c; font-size: 11px; text-transform: uppercase; }
                 dd { color: #d9e7e0; font-size: 12px; margin: 0; overflow-wrap: anywhere; }
@@ -698,6 +867,55 @@ class WebCarryPanel(
         </head>
         <body>$body</body>
         </html>
+        """.trimIndent()
+
+    private fun messagesPanelScript(): String =
+        """
+        <script>
+        (function () {
+            function statusFor(form) {
+                return form.querySelector('[data-form-status]');
+            }
+            function setStatus(form, text) {
+                var node = statusFor(form);
+                if (node) node.textContent = text;
+            }
+            function submitForm(form) {
+                var body = new URLSearchParams(new FormData(form));
+                setStatus(form, 'Sending message...');
+                fetch(form.getAttribute('action'), {
+                    method: 'POST',
+                    credentials: 'include',
+                    headers: {
+                        'Accept': 'application/json',
+                        'Content-Type': 'application/x-www-form-urlencoded'
+                    },
+                    body: body
+                }).then(function (response) {
+                    if (!response.ok) throw new Error('HTTP ' + response.status);
+                    return response.json();
+                }).then(function (payload) {
+                    setStatus(form, 'Message sent.');
+                    form.reset();
+                    var thread = payload.thread || {};
+                    var id = thread.id || payload.thread_id || '';
+                    if (id) {
+                        window.location.href = '/world/panels/messages?thread=' + encodeURIComponent(id) + '&surface=android_carry';
+                    } else {
+                        window.location.href = '/world/panels/messages?surface=android_carry';
+                    }
+                }).catch(function () {
+                    setStatus(form, 'Unable to send message.');
+                });
+            }
+            document.querySelectorAll('form[data-create-thread], form[data-reply-thread]').forEach(function (form) {
+                form.addEventListener('submit', function (event) {
+                    event.preventDefault();
+                    submitForm(form);
+                });
+            });
+        }());
+        </script>
         """.trimIndent()
 
     private fun createStatusView(context: Context): TextView =
