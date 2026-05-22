@@ -90,17 +90,15 @@ class CarrySideRails(
     private val leftItems: LinearLayout,
     private val rightRail: View,
     private val rightHandle: TextView,
-    private val rightItems: LinearLayout
+    private val rightItems: LinearLayout,
+    private val onRowSelected: (ContextRailRow) -> Unit = {}
 ) {
-    private var expandedSide: Side? = null
     private var leftContent = fallbackLeftContextRail()
     private var rightContent = fallbackRightContextRail()
     private var activeContext: CarrySurface? = null
 
     init {
-        leftHandle.setOnClickListener { toggle(Side.LEFT) }
-        rightHandle.setOnClickListener { toggle(Side.RIGHT) }
-        collapse()
+        applyExpandedState()
     }
 
     fun bind(left: ContextRailContent, right: ContextRailContent) {
@@ -124,21 +122,10 @@ class CarrySideRails(
     }
 
     fun handleBack(): Boolean {
-        if (expandedSide == null) {
-            return false
-        }
-
-        collapse()
-        return true
+        return false
     }
 
     fun collapse() {
-        expandedSide = null
-        applyExpandedState()
-    }
-
-    private fun toggle(side: Side) {
-        expandedSide = if (expandedSide == side) null else side
         applyExpandedState()
     }
 
@@ -155,7 +142,8 @@ class CarrySideRails(
                     container = container,
                     row = ContextRailRow("Open context", surface.title, "active_context"),
                     isLast = false,
-                    emphasized = true
+                    emphasized = true,
+                    interactive = false
                 )
             )
         }
@@ -166,7 +154,8 @@ class CarrySideRails(
                     container = container,
                     row = row,
                     isLast = index == content.rows.lastIndex,
-                    emphasized = activeContext != null && rowMatchesSurface(row, activeContext)
+                    emphasized = activeContext != null && rowMatchesSurface(row, activeContext),
+                    interactive = content == rightContent
                 )
             )
         }
@@ -175,7 +164,7 @@ class CarrySideRails(
     private fun headerFor(container: LinearLayout, content: ContextRailContent): LinearLayout =
         LinearLayout(container.context).apply {
             layoutParams = LinearLayout.LayoutParams(
-                210.dp(container),
+                ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT
             ).apply {
                 bottomMargin = 8.dp(container)
@@ -189,20 +178,6 @@ class CarrySideRails(
                         ViewGroup.LayoutParams.MATCH_PARENT,
                         ViewGroup.LayoutParams.WRAP_CONTENT
                     )
-                    text = content.title
-                    setTextColor(Color.WHITE)
-                    textSize = 12.0f
-                    setTypeface(typeface, android.graphics.Typeface.BOLD)
-                }
-            )
-            addView(
-                TextView(container.context).apply {
-                    layoutParams = LinearLayout.LayoutParams(
-                        ViewGroup.LayoutParams.MATCH_PARENT,
-                        ViewGroup.LayoutParams.WRAP_CONTENT
-                    ).apply {
-                        topMargin = 2.dp(container)
-                    }
                     text = content.status
                     setTextColor(Color.parseColor("#B9CCC6"))
                     textSize = 10.0f
@@ -214,11 +189,12 @@ class CarrySideRails(
         container: LinearLayout,
         row: ContextRailRow,
         isLast: Boolean,
-        emphasized: Boolean
+        emphasized: Boolean,
+        interactive: Boolean
     ): LinearLayout =
         LinearLayout(container.context).apply {
             layoutParams = LinearLayout.LayoutParams(
-                210.dp(container),
+                ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT
             ).apply {
                 if (!isLast) {
@@ -229,6 +205,11 @@ class CarrySideRails(
             orientation = LinearLayout.VERTICAL
             minimumHeight = 42.dp(container)
             setPadding(10.dp(container), 6.dp(container), 10.dp(container), 6.dp(container))
+            if (interactive) {
+                isClickable = true
+                isFocusable = true
+                setOnClickListener { onRowSelected(row) }
+            }
 
             addView(
                 TextView(container.context).apply {
@@ -260,10 +241,10 @@ class CarrySideRails(
         }
 
     private fun applyExpandedState() {
-        leftItems.visibility = if (expandedSide == Side.LEFT) View.VISIBLE else View.GONE
-        rightItems.visibility = if (expandedSide == Side.RIGHT) View.VISIBLE else View.GONE
-        leftHandle.text = if (expandedSide == Side.LEFT) "^" else "v"
-        rightHandle.text = if (expandedSide == Side.RIGHT) "^" else "v"
+        leftItems.visibility = View.VISIBLE
+        rightItems.visibility = View.VISIBLE
+        leftHandle.text = leftContent.title
+        rightHandle.text = rightContent.title
     }
 
     private fun colorFor(key: String): Int =
@@ -288,11 +269,6 @@ class CarrySideRails(
 
     private fun Int.dp(view: View): Int =
         (this * view.resources.displayMetrics.density).toInt()
-
-    private enum class Side {
-        LEFT,
-        RIGHT
-    }
 }
 
 class CarryActiveWindow(

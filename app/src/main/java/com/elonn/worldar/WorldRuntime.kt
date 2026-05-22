@@ -279,6 +279,7 @@ fun fallbackCarrySurfaces(): List<CarrySurface> =
     listOf(
         CarrySurface("find_object", "Find", "Find is unavailable while World is offline.", null),
         CarrySurface("social_object", "Social", "Social is unavailable while World is offline.", null),
+        CarrySurface("events_object", "Events", "Events are unavailable while World is offline.", null),
         CarrySurface("calendar_object", "Calendar", "Calendar is unavailable while World is offline.", null),
         CarrySurface("messages_object", "Messages", "Messages are unavailable while World is offline.", null),
         CarrySurface("settings_object", "Settings", "World runtime settings are unavailable while offline.", null)

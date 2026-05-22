@@ -55,7 +55,6 @@ class MainActivity : AppCompatActivity(), WebPanelHost {
     private lateinit var arSurface: GLSurfaceView
     private lateinit var roomWorldMarkers: FrameLayout
     private lateinit var carryLayerRoot: View
-    private lateinit var carrySideRailLayer: View
     private lateinit var carryAppDockRoot: View
     private lateinit var carryActiveWindowRoot: View
     private lateinit var carryAppDock: CarryAppDock
@@ -110,7 +109,6 @@ class MainActivity : AppCompatActivity(), WebPanelHost {
         arSurface = findViewById(R.id.ar_surface)
         roomWorldMarkers = findViewById(R.id.room_world_markers)
         carryLayerRoot = findViewById(R.id.carry_layer)
-        carrySideRailLayer = findViewById(R.id.carry_siderail_layer)
         carryAppDockRoot = findViewById(R.id.carry_app_dock)
         carryActiveWindowRoot = findViewById(R.id.carry_active_window)
         loginOverlay = findViewById(R.id.login_overlay)
@@ -128,7 +126,8 @@ class MainActivity : AppCompatActivity(), WebPanelHost {
             leftItems = findViewById<LinearLayout>(R.id.carry_left_siderail_items),
             rightRail = findViewById(R.id.carry_right_siderail),
             rightHandle = findViewById(R.id.carry_right_siderail_handle),
-            rightItems = findViewById<LinearLayout>(R.id.carry_right_siderail_items)
+            rightItems = findViewById<LinearLayout>(R.id.carry_right_siderail_items),
+            onRowSelected = { row -> openContextRailRow(row) }
         )
         carryActiveWindow = CarryActiveWindow(
             root = carryActiveWindowRoot,
@@ -157,7 +156,6 @@ class MainActivity : AppCompatActivity(), WebPanelHost {
         configureLogin()
         inflateRoomWorldMarkers()
         carryLayerRoot.bringToFront()
-        carrySideRailLayer.bringToFront()
         resumeAuthenticatedRuntime()
     }
 
@@ -364,8 +362,33 @@ class MainActivity : AppCompatActivity(), WebPanelHost {
         carrySideRails.collapse()
         carryActiveWindow.show(surface)
         carryLayerRoot.bringToFront()
-        carrySideRailLayer.bringToFront()
     }
+
+    private fun openContextRailRow(row: ContextRailRow) {
+        val key = row.key.lowercase()
+        val target = when {
+            key.contains("event") -> surfaceForKey("events_object")
+                ?: surfaceForKey("social_object")?.copy(
+                    title = "Events",
+                    runtimePanelUrl = "/world/panels/social?view=events"
+                )
+            key.contains("message") -> surfaceForKey("messages_object")
+            key.contains("communit") -> surfaceForKey("social_object")?.copy(
+                runtimePanelUrl = "/world/panels/social?view=communities"
+            )
+            key.contains("presence") -> surfaceForKey("social_object")?.copy(
+                runtimePanelUrl = "/world/panels/social?view=presence"
+            )
+            key.contains("conversation") || key.contains("social") || key.contains("workspace") ->
+                surfaceForKey("social_object")
+            else -> null
+        }
+
+        target?.let { showActiveCarryWindow(it) }
+    }
+
+    private fun surfaceForKey(key: String): CarrySurface? =
+        carrySurfaces.firstOrNull { it.key.equals(key, ignoreCase = true) }
 
     private fun loadWorldRuntime(token: String) {
         Thread {
