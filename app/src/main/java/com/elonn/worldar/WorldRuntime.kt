@@ -62,13 +62,22 @@ object WorldRuntimeParser {
     fun parse(payload: JSONObject, source: String): WorldRuntime {
         val layout = payload.optJSONObject("layout") ?: JSONObject()
         return WorldRuntime(
-            fieldObjects = fieldObjects(layout.optJSONArray("field")),
+            fieldObjects = fieldObjects(fieldArray(payload, layout)),
             carrySurfaces = carrySurfaces(layout.optJSONArray("carry")),
             leftContextRail = worldContextRail(payload, layout),
             rightContextRail = socialContextRail(payload),
             source = source
         )
     }
+
+    private fun fieldArray(payload: JSONObject, layout: JSONObject): JSONArray? =
+        layout.optJSONArray("field")
+            ?: payload.optJSONObject("maps")?.optJSONArray("field")
+            ?: payload.optJSONObject("services")
+                ?.optJSONObject("maps")
+                ?.optJSONObject("objects")
+                ?.optJSONArray("field")
+            ?: payload.optJSONObject("objects")?.optJSONArray("field")
 
     private fun fieldObjects(field: JSONArray?): List<WorldObject> {
         if (field == null) {
