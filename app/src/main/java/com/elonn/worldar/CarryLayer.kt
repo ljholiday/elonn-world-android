@@ -3,11 +3,9 @@ package com.elonn.worldar
 import android.content.Context
 import android.graphics.Color
 import android.net.Uri
-import android.util.AttributeSet
 import android.view.Gravity
 import android.view.MotionEvent
 import android.view.View
-import android.view.ViewConfiguration
 import android.view.ViewGroup
 import android.webkit.CookieManager
 import android.webkit.ValueCallback
@@ -299,10 +297,10 @@ class CarrySideRails(
 
 open class SurfaceStackController(
     private val root: View,
-    private val contentContainer: SurfaceStackViewport,
+    private val contentContainer: FrameLayout,
     closeControl: View,
     private val panelHost: CarryPanelHost
-) : SurfaceStackGestureHandler {
+) {
     private var surfaces: List<CarrySurface> = emptyList()
     private var focusIndex = 0
     private val mountedPanels = linkedMapOf<String, CarryAppPanel>()
@@ -318,8 +316,6 @@ open class SurfaceStackController(
         closeControl.setOnClickListener {
             root.visibility = View.INVISIBLE
         }
-        contentContainer.gestureHandler = this
-        contentContainer.setOnTouchListener { _, event -> handleTouch(event) }
     }
 
     fun bind(initialSurfaces: List<CarrySurface>) {
@@ -394,7 +390,7 @@ open class SurfaceStackController(
                 background = contentContainer.context.getDrawable(R.drawable.carry_dock_background)
                 setPadding(10.dp(contentContainer), 6.dp(contentContainer), 10.dp(contentContainer), 10.dp(contentContainer))
                 elevation = 0.0f
-                setOnTouchListener { _, event -> handleTouch(event) }
+                setOnClickListener { focus(surface) }
             }
             val header = LinearLayout(contentContainer.context).apply {
                 layoutParams = LinearLayout.LayoutParams(
@@ -471,14 +467,14 @@ open class SurfaceStackController(
         return false
     }
 
-    override fun onStackGestureStart(rawY: Float) {
+    private fun onStackGestureStart(rawY: Float) {
         dragStartY = rawY
         dragCurrentY = rawY
         dragStartTime = System.currentTimeMillis()
         dragging = true
     }
 
-    override fun onStackGestureMove(rawY: Float): Boolean {
+    private fun onStackGestureMove(rawY: Float): Boolean {
         if (!dragging) {
             return false
         }
@@ -487,7 +483,7 @@ open class SurfaceStackController(
         return true
     }
 
-    override fun onStackGestureEnd(rawY: Float): Boolean {
+    private fun onStackGestureEnd(rawY: Float): Boolean {
         if (!dragging) {
             return false
         }
@@ -546,7 +542,7 @@ open class SurfaceStackController(
 class CarryActiveWindow(
     root: View,
     titleView: TextView,
-    contentContainer: SurfaceStackViewport,
+    contentContainer: FrameLayout,
     closeControl: View,
     panelHost: CarryPanelHost
 ) : SurfaceStackController(root, contentContainer, closeControl, panelHost) {
@@ -556,67 +552,6 @@ class CarryActiveWindow(
     fun show(surface: CarrySurface) {
         update(listOf(surface))
         focus(surface)
-    }
-}
-
-interface SurfaceStackGestureHandler {
-    fun onStackGestureStart(rawY: Float)
-    fun onStackGestureMove(rawY: Float): Boolean
-    fun onStackGestureEnd(rawY: Float): Boolean
-}
-
-class SurfaceStackViewport @JvmOverloads constructor(
-    context: Context,
-    attrs: AttributeSet? = null
-) : FrameLayout(context, attrs) {
-    var gestureHandler: SurfaceStackGestureHandler? = null
-    private val touchSlop = ViewConfiguration.get(context).scaledTouchSlop
-    private var downX = 0.0f
-    private var downY = 0.0f
-    private var interceptingStackGesture = false
-
-    override fun onInterceptTouchEvent(event: MotionEvent): Boolean {
-        when (event.actionMasked) {
-            MotionEvent.ACTION_DOWN -> {
-                downX = event.rawX
-                downY = event.rawY
-                interceptingStackGesture = false
-                return false
-            }
-            MotionEvent.ACTION_MOVE -> {
-                val deltaX = event.rawX - downX
-                val deltaY = event.rawY - downY
-                if (abs(deltaY) > touchSlop && abs(deltaY) > abs(deltaX) * 1.2f) {
-                    interceptingStackGesture = true
-                    gestureHandler?.onStackGestureStart(downY)
-                    gestureHandler?.onStackGestureMove(event.rawY)
-                    return true
-                }
-            }
-            MotionEvent.ACTION_UP,
-            MotionEvent.ACTION_CANCEL -> {
-                interceptingStackGesture = false
-            }
-        }
-
-        return false
-    }
-
-    override fun onTouchEvent(event: MotionEvent): Boolean {
-        if (!interceptingStackGesture) {
-            return super.onTouchEvent(event)
-        }
-
-        return when (event.actionMasked) {
-            MotionEvent.ACTION_MOVE -> gestureHandler?.onStackGestureMove(event.rawY) ?: true
-            MotionEvent.ACTION_UP,
-            MotionEvent.ACTION_CANCEL -> {
-                val handled = gestureHandler?.onStackGestureEnd(event.rawY) ?: true
-                interceptingStackGesture = false
-                handled
-            }
-            else -> true
-        }
     }
 }
 
