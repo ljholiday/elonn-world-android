@@ -24,7 +24,8 @@ data class CarrySurface(
     val key: String,
     val title: String,
     val panelText: String,
-    val runtimePanelUrl: String?
+    val runtimePanelUrl: String?,
+    val surfaceId: String = key
 )
 
 class CarryAppDock(
@@ -360,14 +361,14 @@ class CarryPanelHost(
         } else {
             WebCarryPanel(
                 title = surface.title,
-                url = worldUrl(runtimeUrl),
+                url = worldUrl(runtimeUrl, surface.surfaceId),
                 authToken = authTokenProvider(),
                 host = fileChooserHost
             )
         }
     }
 
-    private fun worldUrl(path: String): String {
+    private fun worldUrl(path: String, surfaceId: String): String {
         val absolute = if (path.startsWith("http://") || path.startsWith("https://")) {
             path
         } else {
@@ -375,7 +376,7 @@ class CarryPanelHost(
         }
 
         val separator = if (absolute.contains('?')) "&" else "?"
-        return absolute + separator + "surface=android_carry"
+        return absolute + separator + "surface=android_carry&runtime=android&surface_id=" + Uri.encode(surfaceId)
     }
 }
 

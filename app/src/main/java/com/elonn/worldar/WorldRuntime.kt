@@ -11,9 +11,33 @@ import kotlin.math.sin
 data class WorldRuntime(
     val fieldObjects: List<WorldObject>,
     val carrySurfaces: List<CarrySurface>,
+    val surfaceRuntime: RuntimeSurfaceContract?,
     val leftContextRail: ContextRailContent,
     val rightContextRail: ContextRailContent,
     val source: String
+)
+
+data class RuntimeSurfaceContract(
+    val surfaces: List<RuntimeSurface>,
+    val stacks: List<RuntimeSurfaceStack>,
+    val focusedSurfaceId: String?
+)
+
+data class RuntimeSurface(
+    val surfaceId: String,
+    val surfaceType: String,
+    val title: String,
+    val contentUrl: String?,
+    val placementMode: String,
+    val stackId: String?
+)
+
+data class RuntimeSurfaceStack(
+    val stackId: String,
+    val stackType: String,
+    val focusedSurfaceId: String?,
+    val surfaceOrder: List<String>,
+    val viewportId: String?
 )
 
 data class ContextRailContent(
@@ -61,9 +85,11 @@ class WorldRuntimeClient(
 object WorldRuntimeParser {
     fun parse(payload: JSONObject, source: String): WorldRuntime {
         val layout = payload.optJSONObject("layout") ?: JSONObject()
+        val surfaceRuntime = surfaceRuntime(payload.optJSONObject("surface_runtime"))
         return WorldRuntime(
             fieldObjects = fieldObjects(fieldArray(payload, layout)),
-            carrySurfaces = carrySurfaces(layout.optJSONArray("carry")),
+            carrySurfaces = carrySurfaces(surfaceRuntime, layout.optJSONArray("carry")),
+            surfaceRuntime = surfaceRuntime,
             leftContextRail = worldContextRail(payload, layout),
             rightContextRail = socialContextRail(payload),
             source = source
@@ -123,7 +149,22 @@ object WorldRuntimeParser {
         )
     }
 
-    private fun carrySurfaces(carry: JSONArray?): List<CarrySurface> {
+    private fun carrySurfaces(surfaceRuntime: RuntimeSurfaceContract?, carry: JSONArray?): List<CarrySurface> {
+        if (surfaceRuntime != null && surfaceRuntime.surfaces.isNotEmpty()) {
+            val order = surfaceRuntime.stacks.firstOrNull()?.surfaceOrder.orEmpty()
+            val byId = surfaceRuntime.surfaces.associateBy { it.surfaceId }
+            val ordered = order.mapNotNull { byId[it] }.ifEmpty { surfaceRuntime.surfaces }
+            return ordered.map { surface ->
+                CarrySurface(
+                    key = surface.surfaceId,
+                    title = surface.title,
+                    panelText = "${surface.title} is not available yet.",
+                    runtimePanelUrl = surface.contentUrl,
+                    surfaceId = surface.surfaceId
+                )
+            }
+        }
+
         if (carry == null) {
             return emptyList()
         }
@@ -139,9 +180,85 @@ object WorldRuntimeParser {
                         key = key,
                         title = title,
                         panelText = state.optString("panel", "$title is not available yet."),
-                        runtimePanelUrl = state.optString("runtime_panel_url").ifBlank { null }
+                        runtimePanelUrl = state.optString("runtime_panel_url").ifBlank { null },
+                        surfaceId = key
                     )
                 )
+            }
+        }
+    }
+
+    private fun surfaceRuntime(payload: JSONObject?): RuntimeSurfaceContract? {
+        if (payload == null) {
+            return null
+        }
+
+        val surfaces = runtimeSurfaces(payload.optJSONArray("surfaces"))
+        val stacks = runtimeStacks(payload.optJSONArray("stacks"))
+        return RuntimeSurfaceContract(
+            surfaces = surfaces,
+            stacks = stacks,
+            focusedSurfaceId = stacks.firstOrNull()?.focusedSurfaceId
+        )
+    }
+
+    private fun runtimeSurfaces(source: JSONArray?): List<RuntimeSurface> {
+        if (source == null) {
+            return emptyList()
+        }
+
+        return buildList {
+            for (index in 0 until source.length()) {
+                val item = source.optJSONObject(index) ?: continue
+                val contentSource = item.optJSONObject("content_source") ?: JSONObject()
+                val placement = item.optJSONObject("placement") ?: JSONObject()
+                val surfaceId = item.optString("surface_id", "surface_$index")
+                add(
+                    RuntimeSurface(
+                        surfaceId = surfaceId,
+                        surfaceType = item.optString("surface_type", "web_surface"),
+                        title = item.optString("title", surfaceId),
+                        contentUrl = contentSource.optString("url").ifBlank { null },
+                        placementMode = placement.optString("mode", "stacked"),
+                        stackId = placement.optString("stack_id").ifBlank { null }
+                    )
+                )
+            }
+        }
+    }
+
+    private fun runtimeStacks(source: JSONArray?): List<RuntimeSurfaceStack> {
+        if (source == null) {
+            return emptyList()
+        }
+
+        return buildList {
+            for (index in 0 until source.length()) {
+                val item = source.optJSONObject(index) ?: continue
+                add(
+                    RuntimeSurfaceStack(
+                        stackId = item.optString("stack_id", "stack_$index"),
+                        stackType = item.optString("stack_type", "carry_stack"),
+                        focusedSurfaceId = item.optString("focused_surface_id").ifBlank { null },
+                        surfaceOrder = stringArray(item.optJSONArray("surface_order")),
+                        viewportId = item.optString("viewport_id").ifBlank { null }
+                    )
+                )
+            }
+        }
+    }
+
+    private fun stringArray(source: JSONArray?): List<String> {
+        if (source == null) {
+            return emptyList()
+        }
+
+        return buildList {
+            for (index in 0 until source.length()) {
+                val value = source.optString(index)
+                if (value.isNotBlank()) {
+                    add(value)
+                }
             }
         }
     }
