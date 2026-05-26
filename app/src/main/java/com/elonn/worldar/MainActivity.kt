@@ -59,7 +59,7 @@ class MainActivity : AppCompatActivity(), WebPanelHost {
     private lateinit var carryActiveWindowRoot: View
     private lateinit var carryAppDock: CarryAppDock
     private lateinit var carrySideRails: CarrySideRails
-    private lateinit var carryActiveWindow: CarryActiveWindow
+    private lateinit var surfaceStack: SurfaceStackController
     private lateinit var loginOverlay: View
     private lateinit var loginEmail: EditText
     private lateinit var loginPassword: EditText
@@ -129,9 +129,8 @@ class MainActivity : AppCompatActivity(), WebPanelHost {
             rightItems = findViewById<LinearLayout>(R.id.carry_right_siderail_items),
             onRowSelected = { row -> openContextRailRow(row) }
         )
-        carryActiveWindow = CarryActiveWindow(
+        surfaceStack = SurfaceStackController(
             root = carryActiveWindowRoot,
-            titleView = findViewById(R.id.active_window_title),
             contentContainer = findViewById(R.id.active_window_body),
             closeControl = findViewById(R.id.active_window_close),
             panelHost = CarryPanelHost(
@@ -280,6 +279,7 @@ class MainActivity : AppCompatActivity(), WebPanelHost {
 
     private fun configureCarryRegions() {
         carryAppDock.bind(carrySurfaces)
+        surfaceStack.bind(carrySurfaces)
         carrySideRails.bind(leftContextRail, rightContextRail)
     }
 
@@ -288,7 +288,7 @@ class MainActivity : AppCompatActivity(), WebPanelHost {
             this,
             object : OnBackPressedCallback(true) {
                 override fun handleOnBackPressed() {
-                    if (!carryActiveWindow.handleBack()) {
+                    if (!surfaceStack.handleBack()) {
                         if (!carrySideRails.handleBack()) {
                             isEnabled = false
                             onBackPressedDispatcher.onBackPressed()
@@ -360,7 +360,7 @@ class MainActivity : AppCompatActivity(), WebPanelHost {
         Log.d(tag, "showActiveCarryWindow key=${surface.key} title=${surface.title}")
         carrySideRails.focus(surface)
         carrySideRails.collapse()
-        carryActiveWindow.show(surface)
+        surfaceStack.focus(surface)
         carryLayerRoot.bringToFront()
     }
 
@@ -395,8 +395,25 @@ class MainActivity : AppCompatActivity(), WebPanelHost {
         target?.let { showActiveCarryWindow(it) }
     }
 
-    private fun surfaceForKey(key: String): CarrySurface? =
-        carrySurfaces.firstOrNull { it.key.equals(key, ignoreCase = true) }
+    private fun surfaceForKey(key: String): CarrySurface? {
+        val normalized = key.lowercase()
+        val aliases = when {
+            normalized.contains("message") -> listOf("message")
+            normalized.contains("event") -> listOf("event")
+            normalized.contains("calendar") -> listOf("calendar", "time")
+            normalized.contains("social") || normalized.contains("communit") || normalized.contains("presence") ->
+                listOf("social", "community", "presence")
+            normalized.contains("find") || normalized.contains("search") -> listOf("find", "search")
+            else -> listOf(normalized.removeSuffix("_object"))
+        }
+
+        return carrySurfaces.firstOrNull { surface ->
+            surface.key.equals(key, ignoreCase = true)
+        } ?: carrySurfaces.firstOrNull { surface ->
+            val identity = "${surface.key} ${surface.surfaceId} ${surface.title}".lowercase()
+            aliases.any { alias -> identity.contains(alias) }
+        }
+    }
 
     private fun loadWorldRuntime(token: String) {
         Thread {
@@ -475,6 +492,7 @@ class MainActivity : AppCompatActivity(), WebPanelHost {
         rightContextRail = runtime.rightContextRail
         inflateRoomWorldMarkers()
         carryAppDock.update(carrySurfaces)
+        surfaceStack.update(carrySurfaces)
         carrySideRails.update(leftContextRail, rightContextRail)
         renderer.updateWorldObjects(roomWorldMarkerObjects, PlaceholderWorldObjects.deviceLocation)
     }

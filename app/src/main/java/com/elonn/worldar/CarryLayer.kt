@@ -4,6 +4,7 @@ import android.content.Context
 import android.graphics.Color
 import android.net.Uri
 import android.view.Gravity
+import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
 import android.webkit.CookieManager
@@ -19,6 +20,7 @@ import android.widget.LinearLayout
 import android.widget.TextView
 import org.json.JSONArray
 import org.json.JSONObject
+import kotlin.math.abs
 
 data class CarrySurface(
     val key: String,
@@ -293,40 +295,65 @@ class CarrySideRails(
         (this * view.resources.displayMetrics.density).toInt()
 }
 
-class CarryActiveWindow(
+open class SurfaceStackController(
     private val root: View,
-    private val titleView: TextView,
     private val contentContainer: FrameLayout,
     closeControl: View,
     private val panelHost: CarryPanelHost
 ) {
-    private var activeSurfaceKey: String? = null
-    private var activePanel: CarryAppPanel? = null
+    private var surfaces: List<CarrySurface> = emptyList()
+    private var focusIndex = 0
+    private val mountedPanels = linkedMapOf<String, CarryAppPanel>()
+    private val mountedViews = linkedMapOf<String, View>()
+    private val mountedSignatures = linkedMapOf<String, String>()
+    private var dragStartY = 0.0f
+    private var dragCurrentY = 0.0f
+    private var dragStartTime = 0L
+    private var dragging = false
 
     init {
         closeControl.setOnClickListener {
-            close()
+            root.visibility = View.INVISIBLE
         }
+        contentContainer.setOnTouchListener { _, event -> handleTouch(event) }
     }
 
-    fun show(surface: CarrySurface) {
-        if (activeSurfaceKey == surface.key && root.visibility == View.VISIBLE) {
+    fun bind(initialSurfaces: List<CarrySurface>) {
+        update(initialSurfaces)
+    }
+
+    fun update(nextSurfaces: List<CarrySurface>) {
+        surfaces = nextSurfaces
+        if (surfaces.isEmpty()) {
+            root.visibility = View.INVISIBLE
+            clearRemovedPanels(emptySet())
             return
         }
 
-        val panel = panelHost.panelFor(surface)
-        clearContent()
-        activeSurfaceKey = surface.key
-        activePanel = panel
-        titleView.text = panel.title
-        contentContainer.addView(panel.createView(contentContainer.context))
+        if (focusIndex !in surfaces.indices) {
+            focusIndex = 0
+        }
+
+        val activeIds = surfaces.map { it.surfaceId }.toSet()
+        clearRemovedPanels(activeIds)
+        mountSurfaces()
         root.visibility = View.VISIBLE
+        applyLayout(0.0f)
     }
 
-    fun close() {
-        activeSurfaceKey = null
-        clearContent()
-        root.visibility = View.INVISIBLE
+    fun focus(surface: CarrySurface) {
+        val index = surfaces.indexOfFirst { it.surfaceId == surface.surfaceId || it.key == surface.key }
+        if (index < 0) {
+            return
+        }
+
+        surfaces = surfaces.mapIndexed { surfaceIndex, existing ->
+            if (surfaceIndex == index) surface else existing
+        }
+        focusIndex = index
+        root.visibility = View.VISIBLE
+        mountSurfaces()
+        applyLayout(0.0f)
     }
 
     fun handleBack(): Boolean {
@@ -334,18 +361,179 @@ class CarryActiveWindow(
             return false
         }
 
-        if (activePanel?.handleBack() == true) {
+        val focused = surfaces.getOrNull(focusIndex)
+        val focusedPanel = focused?.let { mountedPanels[it.surfaceId] }
+        if (focusedPanel?.handleBack() == true) {
             return true
         }
 
-        close()
+        root.visibility = View.INVISIBLE
         return true
     }
 
-    private fun clearContent() {
-        activePanel?.onRemovedFromWindow()
-        activePanel = null
-        contentContainer.removeAllViews()
+    private fun mountSurfaces() {
+        surfaces.forEach { surface ->
+            val signature = panelSignature(surface)
+            if (mountedPanels.containsKey(surface.surfaceId) && mountedSignatures[surface.surfaceId] == signature) {
+                return@forEach
+            }
+            mountedPanels.remove(surface.surfaceId)?.onRemovedFromWindow()
+            mountedViews.remove(surface.surfaceId)?.let { contentContainer.removeView(it) }
+
+            val panel = panelHost.panelFor(surface)
+            val container = LinearLayout(contentContainer.context).apply {
+                layoutParams = FrameLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.MATCH_PARENT
+                )
+                orientation = LinearLayout.VERTICAL
+                background = contentContainer.context.getDrawable(R.drawable.carry_dock_background)
+                setPadding(10.dp(contentContainer), 6.dp(contentContainer), 10.dp(contentContainer), 10.dp(contentContainer))
+                elevation = 0.0f
+                setOnTouchListener { _, event -> handleTouch(event) }
+            }
+            val header = LinearLayout(contentContainer.context).apply {
+                layoutParams = LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    32.dp(contentContainer)
+                )
+                gravity = Gravity.CENTER_VERTICAL
+                orientation = LinearLayout.HORIZONTAL
+                setOnTouchListener { _, event -> handleTouch(event) }
+            }
+            val title = TextView(contentContainer.context).apply {
+                layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1.0f)
+                text = panel.title
+                setTextColor(Color.WHITE)
+                textSize = 13.0f
+                setTypeface(typeface, android.graphics.Typeface.BOLD)
+            }
+            val meta = TextView(contentContainer.context).apply {
+                layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+                text = surface.surfaceId
+                setTextColor(Color.parseColor("#8EA39B"))
+                textSize = 9.0f
+            }
+            val body = FrameLayout(contentContainer.context).apply {
+                layoutParams = LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    0,
+                    1.0f
+                )
+                addView(panel.createView(contentContainer.context))
+            }
+
+            header.addView(title)
+            header.addView(meta)
+            container.addView(header)
+            container.addView(body)
+            contentContainer.addView(container)
+            mountedPanels[surface.surfaceId] = panel
+            mountedViews[surface.surfaceId] = container
+            mountedSignatures[surface.surfaceId] = signature
+        }
+    }
+
+    private fun clearRemovedPanels(activeIds: Set<String>) {
+        val removed = mountedPanels.keys.filter { it !in activeIds }
+        removed.forEach { surfaceId ->
+            mountedPanels.remove(surfaceId)?.onRemovedFromWindow()
+            mountedViews.remove(surfaceId)?.let { contentContainer.removeView(it) }
+            mountedSignatures.remove(surfaceId)
+        }
+    }
+
+    private fun panelSignature(surface: CarrySurface): String =
+        listOf(surface.title, surface.runtimePanelUrl.orEmpty(), surface.panelText).joinToString("|")
+
+    private fun handleTouch(event: MotionEvent): Boolean {
+        when (event.actionMasked) {
+            MotionEvent.ACTION_DOWN -> {
+                dragStartY = event.rawY
+                dragCurrentY = event.rawY
+                dragStartTime = System.currentTimeMillis()
+                dragging = true
+                return true
+            }
+            MotionEvent.ACTION_MOVE -> {
+                if (!dragging) {
+                    return false
+                }
+                dragCurrentY = event.rawY
+                applyLayout((dragCurrentY - dragStartY) / contentContainer.height.coerceAtLeast(1).toFloat())
+                return true
+            }
+            MotionEvent.ACTION_UP,
+            MotionEvent.ACTION_CANCEL -> {
+                if (!dragging) {
+                    return false
+                }
+                val delta = dragCurrentY - dragStartY
+                val ratio = delta / contentContainer.height.coerceAtLeast(1).toFloat()
+                val elapsed = (System.currentTimeMillis() - dragStartTime).coerceAtLeast(1)
+                val velocity = delta / elapsed.toFloat()
+                if ((ratio < -0.18f || velocity < -0.65f) && focusIndex < surfaces.lastIndex) {
+                    focusIndex += 1
+                } else if ((ratio > 0.18f || velocity > 0.65f) && focusIndex > 0) {
+                    focusIndex -= 1
+                }
+                dragging = false
+                applyLayout(0.0f)
+                return true
+            }
+        }
+
+        return false
+    }
+
+    private fun applyLayout(dragRatio: Float) {
+        surfaces.forEachIndexed { index, surface ->
+            val view = mountedViews[surface.surfaceId] ?: return@forEachIndexed
+            val offset = index - focusIndex + dragRatio
+            val distance = abs(offset)
+            val visible = distance <= 1.35f
+            val scale = (1.0f - distance * 0.08f).coerceAtLeast(0.82f)
+            view.translationY = offset * 76.dp(contentContainer)
+            view.scaleX = scale
+            view.scaleY = scale
+            view.alpha = if (visible) (1.0f - distance * 0.38f).coerceAtLeast(0.28f) else 0.0f
+            view.elevation = ((2.0f - distance).coerceAtLeast(0.0f) * 8.0f).dpFloat(contentContainer)
+            view.isEnabled = distance < 0.15f
+            view.isClickable = distance < 0.15f
+            view.visibility = if (visible) View.VISIBLE else View.INVISIBLE
+            setDescendantTouchEnabled(view, distance < 0.15f)
+        }
+    }
+
+    private fun setDescendantTouchEnabled(view: View, enabled: Boolean) {
+        view.isEnabled = enabled
+        if (view is ViewGroup) {
+            for (index in 0 until view.childCount) {
+                setDescendantTouchEnabled(view.getChildAt(index), enabled)
+            }
+        }
+    }
+
+    private fun Int.dp(view: View): Int =
+        (this * view.resources.displayMetrics.density).toInt()
+
+    private fun Float.dpFloat(view: View): Float =
+        this * view.resources.displayMetrics.density
+}
+
+class CarryActiveWindow(
+    root: View,
+    titleView: TextView,
+    contentContainer: FrameLayout,
+    closeControl: View,
+    panelHost: CarryPanelHost
+) : SurfaceStackController(root, contentContainer, closeControl, panelHost) {
+    @Suppress("UNUSED_PARAMETER")
+    private val ignoredTitleView = titleView
+
+    fun show(surface: CarrySurface) {
+        update(listOf(surface))
+        focus(surface)
     }
 }
 

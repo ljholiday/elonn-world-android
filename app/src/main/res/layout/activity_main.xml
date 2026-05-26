@@ -161,7 +161,7 @@
                         android:layout_width="0dp"
                         android:layout_height="wrap_content"
                         android:layout_weight="1"
-                        android:text="Carry Object"
+                        android:text="Surface Stack"
                         android:textColor="#FFFFFF"
                         android:textSize="13sp"
                         android:textStyle="bold" />
@@ -172,7 +172,7 @@
                         android:layout_height="30dp"
                         android:background="@drawable/carry_dock_button_background"
                         android:gravity="center"
-                        android:text="Close"
+                        android:text="Hide"
                         android:textColor="#D7FFF3"
                         android:textSize="11sp"
                         android:textStyle="bold" />
